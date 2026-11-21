@@ -1397,7 +1397,7 @@ button,.modulo,.modulos-apoyo button,.fin-nav button{-webkit-tap-highlight-color
    Prototipo funcional de una sola página. Estado en localStorage.
    Cada objeto mapea 1:1 a una fila de las hojas R1..R4 de Google Sheets.
    ============================================================ */
-var VERSION_APP = 'v5.5.2';   /* <- lo lee verificarIndex() en el servidor. NO borrar esta línea. */
+var VERSION_APP = 'v5.5.3';   /* <- lo lee verificarIndex() en el servidor. NO borrar esta línea. */
 var KEY = 'heralsa.v5';   /* v5: la hoja es la única fuente de verdad. Al subir de versión cada celular bota su copia vieja y vuelve a leer la hoja. */
 var OPS = ['Hernando', 'Deyana'];
 var META = { i1:5, i2:90, i3:2, i7:95, i10:90 };
@@ -12223,158 +12223,38 @@ function facturaDe(p){
   return calcFactura(lineas, Number(p.descGlobal) || 0);
 }
 
-A.escAbrir = function(pid){ go('esc1', { id:pid }); };
+/* =====================================================================
+   v5.5.3 · BUG_027 · AQUI HABIA UN SEGUNDO EMISOR DE DOCUMENTOS, MUERTO
+   =====================================================================
+   SE RETIRARON 152 LINEAS: A.escAbrir (la primera de dos definiciones),
+   S.esc1, A.escDecidir, S.escConf y A.escEjecutar. Era el flujo viejo del
+   escritorio para emitir una remision, y estaba INALCANZABLE: mas abajo en
+   el archivo hay una segunda definicion de A.escAbrir que se ejecuta al
+   cargar, sobreescribe esta, y manda a la pantalla `fac`, que es el emisor
+   unico. go('esc1') solo aparecia dentro de la definicion tapada, asi que
+   ninguna de esas cinco funciones podia ejecutarse nunca.
 
-S.esc1 = function(c){
-  var p = pedido(c.id);
-  if(!p) return { title:'No existe', body:'<div class="empty">Ese pedido ya no esta.</div>' };
-  var f = facturaDe(p);
-  var fisc = fiscalDe(p.cliente);
-  var feOk = puedeFE(p.cliente);
-  var hayRed = ONLINE && SYNC.estado !== 'pendiente' && !(DB.cola || []).length && !(DB.colaPre || []).length && !(DB.colaMov || []).length;
+   POR QUE NO ERA SOLO BASURA, Y ESTO ES LO IMPORTANTE: el codigo muerto
+   tenia la REGLA EQUIVOCADA. Llamaba apiDocumento con TRES argumentos, sin
+   el pago, asi que el servidor habria aplicado sus valores por omision
+   (Contado / Efectivo) y la envoltura habria registrado un INGRESO EN CAJA
+   por una venta a credito: plata que no entro, anotada como si hubiera
+   entrado. Tampoco aplicaba la regla de BUG_008 ni guardaba forma, medio,
+   plazo ni vencimiento en p.doc.
+   Un lector -- y me paso a mi -- lo toma por la verdad del sistema. De
+   hecho en v5.5.1 PARCHEE este bloque para BUG_020 creyendo que corria:
+   el parche era correcto y era inutil, estaba arreglando codigo muerto.
 
-  var b = '<div class="escbig">' + money(f.total) + '</div>';
-  b += '<div class="escsub">' + p.id + ' · ' + esc(p.cliente) + ' · entregado el '
-    + dmy(p.entrega ? p.entrega.te : '') + '</div>';
+   Es el mismo patron que BUG_021 (vaciarCola duplicada): dos definiciones
+   del mismo nombre son dos verdades, y gana la que se carga despues, que no
+   es la que se lee primero. Por eso ahora heralsaDiagnosticarIndex exige
+   que A.escAbrir aparezca UNA sola vez: para que no pueda volver.
 
-  /* --- lo que se va a cobrar --- */
-  b += '<div class="sec">Lo que se va a cobrar</div><div class="f2tabla">';
-  f.lineas.forEach(function(l){
-    b += '<div class="f2fila nocl"><div class="f2fc"><b>' + esc(l.cod) + '</b>'
-      + '<span>' + esc(desc(l.cod) || '') + '</span>'
-      + '<i>' + l.w + ' × ' + money(l.precio)
-      + (l.dpct ? ' · −' + l.dpct + ' %' : '')
-      + ' · IVA ' + (l.iva_pct === 0 ? 'excluido' : l.iva_pct + ' %') + '</i></div>'
-      + '<div class="f2fn"><b>' + money(l.total) + '</b></div></div>';
-  });
-  b += '</div>';
-  b += f2totales(f, p.descGlobal || 0);
-
-  /* --- los datos fiscales del cliente --- */
-  b += '<div class="sec">Datos del cliente</div><div class="card">'
-    + kv('Cliente', esc(p.cliente))
-    + kv('Identificacion', fisc.tipoId
-        ? esc(fisc.tipoId + ' ' + fisc.numId)
-        : '<span style="color:var(--ro)">FALTA</span>')
-    + kv('Forma de pago', esc(fisc.forma || '—'))
-    + kv('Medio de pago', esc(fisc.medio || '—'))
-    + kv('Vendedor', esc(fisc.vendedor || '—')) + '</div>';
-
-  /* --- LA DECISION · dos botones grandes y nada mas --- */
-  b += '<div class="sec">¿Como sale este pedido?</div>';
-  b += '<div class="escdos">';
-  b += '<button class="escb rem" onclick="A.escDecidir(\'' + p.id + '\',\'REMISION\')">'
-    + '<svg class="i lg"><use href="#i-file"/></svg>'
-    + '<b>REMISION</b><span>Documento interno. El consecutivo lo pone la app.</span></button>';
-
-  if(!feOk){
-    b += '<button class="escb fe off" onclick="toast(\'Al cliente le faltan el tipo y el '
-      + 'numero de identificacion. Sin eso la DIAN rechaza la factura.\')">'
-      + '<svg class="i lg"><use href="#i-x"/></svg>'
-      + '<b>FACTURA ELECTRONICA</b><span>No se puede: al cliente le falta el NIT</span></button>';
-  } else if(!hayRed){
-    b += '<button class="escb fe off" onclick="toast(\'Sin conexion no se puede emitir una '
-      + 'factura electronica: no hay forma de validarla. Usa remision.\')">'
-      + '<svg class="i lg"><use href="#i-x"/></svg>'
-      + '<b>FACTURA ELECTRONICA</b><span>No se puede: sin conexion con la hoja</span></button>';
-  } else {
-    b += '<button class="escb fe" onclick="A.escDecidir(\'' + p.id + '\',\'FE\')">'
-      + '<svg class="i lg"><use href="#i-tag"/></svg>'
-      + '<b>FACTURA ELECTRONICA</b><span>Queda por facturar. El numero lo pone Alegra.</span></button>';
-  }
-  b += '</div>';
-
-  if(!hayRed)
-    b += warnBox('<b>Sin conexion.</b> I-21: la app no emite facturas electronicas sin red, '
-      + 'porque no hay forma de validarlas. Lo que si se puede emitir es una '
-      + '<b>remision</b>, y facturarla despues cuando vuelva la señal.');
-
-  b += '<p class="hint">El numero fiscal lo pone <b>Alegra</b>, nunca esta app. Lo que la '
-     + 'app pone es el consecutivo interno de remision (R-###). Asi es imposible que el '
-     + 'sistema se invente un numero de factura.</p>';
-
-  return { title:p.id, sub:'Decidir el documento',
-    ctx:ctxId(p.id, 'DECISION DEL DOCUMENTO', esc(p.cliente)), body:b };
-};
-
-/** Confirmacion obligatoria antes de emitir. */
-A.escDecidir = function(pid, tipo){
-  W = { pid:pid, tipo:tipo };
-  go('escConf');
-};
-
-S.escConf = function(){
-  var p = pedido(W.pid), f = facturaDe(p);
-  var esFE = W.tipo === 'FE';
-  var b = '<h1 class="q">Confirmar</h1>'
-    + '<p class="sub">Esto es lo que va a quedar escrito. Si algo esta mal, toca atras.</p>';
-  b += '<div class="card">'
-    + kv('Pedido', W.pid) + kv('Cliente', esc(p.cliente))
-    + kv('Documento', esFE ? 'Factura electronica' : 'Remision')
-    + kv('Numero', esFE ? '<i>lo pone Alegra</i>' : '<i>el siguiente R-###</i>')
-    + kv('Estado', esFE ? 'POR_FACTURAR' : 'EMITIDO')
-    + kv('Subtotal', money(f.subtotal)) + kv('IVA', money(f.iva))
-    + kv('TOTAL', '<b>' + money(f.total) + '</b>') + '</div>';
-  b += noteBox(esFE
-    ? 'Al confirmar, el pedido queda <b>por facturar</b>. Despues se genera el archivo y '
-      + 'se sube a Alegra, que es la que le pone el numero fiscal.'
-    : 'Al confirmar, la app toma el siguiente consecutivo de remision y lo deja escrito. '
-      + 'Un pedido es una entrega y un documento: no se puede emitir dos veces.');
-  return { title:'Confirmar', sub:W.pid + ' · ' + (esFE ? 'FE' : 'remision'), body:b,
-    foot:'<div class="row2">'
-      + '<button class="btn gho" onclick="back()">No, volver</button>'
-      + '<button class="btn pri" onclick="A.escEjecutar()">Si, emitir</button></div>' };
-};
-
-A.escEjecutar = function(){
-  if(W.guardando){ toast('Ya se esta emitiendo, espera un momento'); return; }
-  if(!exigeEstado(W && W.pid && pedido(W.pid) && W.tipo,
-       'Se perdio la decision del documento. Vuelve a elegir el pedido.', 'esc')) return;
-  W.guardando = true;
-  bloquearPie('Emitiendo...');
-  var pid = W.pid, tipo = W.tipo, p = pedido(pid);
-
-  /* v5.5.1 · BUG_020 · el mismo defecto que en A.facEjecutar, y hay que
-     corregirlo en los DOS sitios: este camino es el del escritorio y
-     tampoco puede inventar el consecutivo en el dispositivo. Ademas este
-     era peor: no encolaba NADA, asi que la hoja no se enteraba nunca.
-     Ver el comentario completo en A.facEjecutar. */
-  if(!ONLINE){
-    if(tipo === 'FE'){ toast('Sin conexion no se puede emitir FE'); W.guardando = false; render(); return; }
-    DB.colaDoc = (DB.colaDoc || []).filter(function(j){ return j.pid !== pid; });
-    DB.colaDoc.push({ pid:pid, tipo:'REMISION', pago:null, pedidoEn:nowT(), operador:DB.operador });
-    p.doc = { tipo:'REMISION', numero:'', fecha:today(), estado:'PROVISIONAL', provisional:true };
-    save();
-    W.guardando = false;
-    pintarSync();
-    swap('ok', { t:'Remision pendiente de numerar', p:pid + ' quedo con su documento.',
-      rows: kv('Pedido', pid) + kv('Numero', '<i>lo pone la hoja al volver la señal</i>')
-        + kv('Total', money(facturaDe(p).total)) });
-    return;
-  }
-
-  srv('apiDocumento', [pid, tipo, DB.operador], function(r){
-    W.guardando = false;
-    if(!r || !r.ok){ toast((r && r.error) || 'La hoja no acepto el documento'); render(); return; }
-    p.doc = { tipo:r.tipo, numero:r.numero, fecha:today(), estado:r.estado };
-    save();
-    swap('ok', {
-      t: r.tipo === 'REMISION' ? ('Remision ' + r.numero) : 'Queda por facturar',
-      p: pid + ' · ' + esc(p.cliente),
-      lead:'<div class="lead"><div class="d" style="color:var(--ve)">' + money(r.total) + '</div>'
-        + '<div class="x">' + (r.tipo === 'REMISION'
-            ? 'Remision ' + r.numero + '<br>emitida' : 'Falta subirla a Alegra<br>para que le ponga el numero')
-        + '</div></div>',
-      rows: kv('Pedido', pid) + kv('Documento', r.tipo === 'FE' ? 'Factura electronica' : 'Remision')
-        + kv('Numero', r.numero || '<i>lo pone Alegra</i>') + kv('Estado', r.estado)
-        + kv('Total', money(r.total))
-    });
-  }, function(e){
-    W.guardando = false;
-    toast('No se pudo emitir: ' + (e && e.message ? e.message : e));
-    render();
-  });
-};
+   LO QUE SI SIGUE VIVO Y NO SE TOCO: S.esc (la pantalla del escritorio,
+   que la version de mas abajo ENVUELVE con escNativa_), S.escAlegra (tiene
+   ruta propia) y A.escModo (el boton de vista de computador).
+   El emisor unico de documentos es A.facEjecutar, con S.facConf.
+   ===================================================================== */
 
 
 /* ============================================================================
