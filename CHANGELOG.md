@@ -5,6 +5,79 @@ comprueba**. Un cambio sin las tres cosas no se registra aquí.
 
 ---
 
+## v5.5
+
+### El documento que se emitía bien y después se borraba solo
+
+**Lo encontró el usuario operando**: P-021 pasó por 5 Facturación, la pantalla
+mostró «Remisión R-004», y el pedido siguió en Facturación sin llegar a Entrega.
+Su hipótesis era que la clave de Alegra estaba vencida.
+
+**La hipótesis era falsa y se puede probar.** Una remisión no toca Alegra en
+ningún punto: `alegraLlamar_` es el único sitio que lee la clave y ninguno de
+sus seis invocadores está en la pila de `apiDocumento_`.
+
+**La causa real, con huella forense.** `heralsaDiagnosticarDocumento()` leyó la
+fila 22 de `R4_Entregas` cruda, y ahí estaba la prueba:
+
+```
+Doc_vendedor    = "Cristian"      <- sólo la escribe apiDocumento_:2486
+Doc_tipo        = ""              <- sí está en la proyección del navegador
+Doc_numero      = ""
+Estado_registro = "PENDIENTE"     <- sólo lo escribe index.html:3656,
+                                     y sólo cuando su copia local no
+                                     tiene documento
+```
+
+El servidor emitió y escribió bien. Después la cola del navegador reescribió la
+fila **completa** desde una copia local sin documento y lo borró. Sobrevivió la
+única columna que el navegador no sabe que existe.
+
+**Por qué la copia local estaba vacía.** `A.facEjecutar` toma la referencia del
+pedido *antes* de llamar al servidor. La emisión tarda segundos y en ese rato el
+ciclo de 30 s completa una sincronización: `hidratar()` reconstruye
+`DB.pedidos` con objetos nuevos. La guarda `editandoAhora_()` evita el
+repintado, **pero no evita el cambio de los datos**. El objeto que se mutaba era
+un huérfano.
+
+**Y por qué el operador nunca vio un error.** `toast()` tenía una sola ranura de
+2,3 s. El aviso del ciclo de sincronización pisaba cualquier mensaje de la
+emisión. El sistema sí decía lo que pasaba.
+
+### Corrección, por principio y no por parche
+
+| Dónde | Qué cambia |
+|---|---|
+| `apiGuardar_` (servidor) | **Un solo dueño por columna.** Las columnas del documento son del servidor. La cola **puede** poner un documento donde no hay ninguno —lo necesita la emisión sin señal— y **nunca** puede borrar ni cambiar uno. Va en el servidor porque el navegador vive en caché: un dispositivo sin actualizar seguiría borrando. |
+| `apiDocumento_` | **El éxito se demuestra.** Relee la fila con `flush()` y compara antes de responder `ok:true`. Antes miraba sólo `r.bloqueada` e ignoraba `r.escrita`. |
+| `apiDocumento_` | `filaDoc` lleva `P_num` y `Estado_registro: VIGENTE`. Un mensaje por causa en vez de «todavía no está LISTO» para tres cosas distintas. |
+| `escribirFila` | Escribe las **columnas clave** al crear una fila nueva. Sin esto, un llamador que no repitiera la clave dejaba una fila sin `P_num`, invisible para `filas()`, para el consecutivo y para las secciones. |
+| `nuevaRemisionSinLock_` | El `ScriptLock` **no es reentrante**: `apiNuevaRemision_` lo pedía y lo soltaba dentro del candado de `apiDocumento_`, así que comprobar-duplicado y escribir dejaban de ser atómicos. Y el consecutivo se cuenta sobre la hoja cruda: un número usado no se reutiliza nunca. |
+| `listo()` (navegador) | Vuelve a buscar el pedido **dentro** del callback. Y cuando el número viene del servidor, no sube nada: esa fila ya tiene dueño. |
+| `toast()` | Dos clases de aviso. Un error **grave** se queda hasta que se toca y un aviso de rutina no lo puede pisar. |
+| `srv()` | `SESIÓN_VENCIDA` ya invoca el callback de error. Antes dejaba `W.guardando` en `true` para siempre y todo reintento moría sin llegar al servidor. |
+| mostrador | El «deshacer» del callback de fallo ya no borra: un fallo de transporte significa que se perdió la respuesta, no que no ocurriera. Se relee la hoja. |
+| indicadores 1 y 8 | Filtran días negativos, como ya hacía el 4. Hoy P-012 metía un valor negativo en el promedio del 8. |
+
+### Lo mismo esperaba en la sección 6
+
+`A.enSave` sube la fila de R4 con esas columnas copiadas de su estado local. Era
+**el mismo defecto** esperando al registrar una entrega: podía borrar la
+remisión de un pedido al entregarlo. Queda cerrado por la misma regla.
+
+### Cómo se comprueba
+
+```
+heralsaVerificarDocumento()        0 fallos · los 4 casos de la regla
+heralsaDiagnosticarDocumento()     0 filas invisibles · los dos buscadores coinciden
+heralsaVersiones()                 todo parejo en v5.5
+```
+
+Después de pegar: emitir P-021 otra vez. Tiene que tomar **R-004**, pasar a
+**6 Entrega**, y seguir ahí después de un ciclo de 30 s.
+
+---
+
 ## v5.4.1
 
 ### El servidor y la pantalla vuelven a ser una sola autoridad
