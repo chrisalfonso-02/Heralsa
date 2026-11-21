@@ -315,6 +315,39 @@ function heralsaDiagnosticarDocumento(){
   av.forEach(function(t){ L('   · ' + t); });
   L('');
 
+  /* ---------------------------------------------------------------
+     10 · LA CAJA DE ESTE PEDIDO
+     Al emitir un documento de CONTADO, la envoltura apiDocumento escribe
+     un INGRESO_VENTA en MOV_Caja: da por cobrada la venta. A credito no
+     escribe nada y la venta se queda en cartera hasta el abono.
+     Por eso la forma de pago del documento no es un detalle: decide si la
+     plata se cuenta como recibida. Aqui se ve si lo que dice la caja
+     coincide con lo que dice el documento.
+     --------------------------------------------------------------- */
+  L('--- 10 · la caja de ' + pid + ' ---');
+  var esCred = viaFilas && txt(viaFilas['Forma_pago']).toUpperCase().indexOf('CRED') === 0;
+  L('   forma de pago del documento: ' + ((viaFilas && txt(viaFilas['Forma_pago'])) || '(vacia)') +
+    ' · medio: ' + ((viaFilas && txt(viaFilas['Medio_pago'])) || '(vacio)'));
+  var movs = filas('MOV_Caja').filter(function(m){ return txt(m.Origen_doc) === pid; });
+  if(!movs.length) L('   no hay ningun movimiento de caja de este pedido');
+  movs.forEach(function(m){
+    L('   ' + txt(m.Caja_num) + ' · ' + txt(m.Tipo_mov) + ' · ' + txt(m.Medio_pago) +
+      ' · ' + txt(m.Valor) + ' · ' + txt(m.Fecha) + ' · ' + txt(m[COL_EST]));
+  });
+  var ingresos = movs.filter(function(m){ return txt(m.Tipo_mov) === 'INGRESO_VENTA' &&
+                                                 txt(m[COL_EST]).toUpperCase() !== E_ANU; });
+  if(esCred && ingresos.length)
+    L('   >>> OJO: el documento es a CREDITO y hay un INGRESO_VENTA. Eso dice que ' +
+      'entro plata que todavia no se ha cobrado: descuadra la caja.');
+  if(!esCred && viaFilas && txt(viaFilas['Doc_tipo']) && !ingresos.length)
+    L('   >>> OJO: el documento es de CONTADO y NO hay INGRESO_VENTA. La venta ' +
+      'esta cobrada segun el documento y la caja no la tiene.');
+  if(!esCred && ingresos.length)
+    L('   coherente: documento de contado con su ingreso en caja.');
+  if(esCred && !ingresos.length)
+    L('   coherente: documento a credito, sin ingreso en caja. Vive en cartera.');
+  L('');
+
   L('===== FIN · no se escribio nada =====');
   return { ok:true, pedido:pid, filaLectura:filaLectura, filaEscritura:filaEscritura,
            invisibles:invisibles.length, duplicados:duplicados, paro:paro };
