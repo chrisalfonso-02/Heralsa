@@ -1397,7 +1397,7 @@ button,.modulo,.modulos-apoyo button,.fin-nav button{-webkit-tap-highlight-color
    Prototipo funcional de una sola página. Estado en localStorage.
    Cada objeto mapea 1:1 a una fila de las hojas R1..R4 de Google Sheets.
    ============================================================ */
-var VERSION_APP = 'v5.5';   /* <- lo lee verificarIndex() en el servidor. NO borrar esta línea. */
+var VERSION_APP = 'v5.5.1';   /* <- lo lee verificarIndex() en el servidor. NO borrar esta línea. */
 var KEY = 'heralsa.v5';   /* v5: la hoja es la única fuente de verdad. Al subir de versión cada celular bota su copia vieja y vuelve a leer la hoja. */
 var OPS = ['Hernando', 'Deyana'];
 var META = { i1:5, i2:90, i3:2, i7:95, i10:90 };
@@ -2070,6 +2070,10 @@ function hidratar(e){
     cola: ant.cola || [],
     colaPre: ant.colaPre || [],
     colaMov: ant.colaMov || [],
+    /* v5.5.1 · BUG_020 · sin señal el numero de remision NO se inventa aqui.
+       Se guarda la INTENCION de emitir y el numero lo pone la hoja cuando
+       vuelva la red. Ver el comentario largo en A.facEjecutar. */
+    colaDoc: ant.colaDoc || [],
     avisos: av,
     /* FASE 2 */
     prodMeta: Object.keys(prodMeta).length ? prodMeta : (ant.prodMeta || {}),
@@ -3853,34 +3857,29 @@ function enviar(datos){
   save();
   if(ONLINE) vaciarCola(); else pintarSync();
 }
-function vaciarCola(cb){
-  if(!ONLINE || !DB.cola || !DB.cola.length){ pintarSync(); if(cb) cb(); return; }
-  var lote = DB.cola.slice(0, 20);
-  SYNC.estado = 'enviando'; pintarSync();
-  srv('apiGuardar', [lote], function(r){
-    var rech=(r&&r.rechazadas)||[];
-    if(rech.length){
-      SYNC.estado='pendiente';pintarSync();
-      toast('La hoja rechazó dato(s): '+rech.join(' · ')+'. El lote sigue en cola para corrección; no se eliminó.');return;
-    }
-    DB.cola = DB.cola.slice(lote.length); save();
-    var blo = (r && r.bloqueadas) ? r.bloqueadas : [];
-    if(blo.length) toast('La hoja rechazó ' + blo.length + ' escritura(s): ' + blo.join(', ') + ' está(n) inhabilitado(s). Actualizando...');
-    if(DB.cola.length){ vaciarCola(cb); return; }
-    SYNC.estado = 'listo'; pintarSync();
-    if(blo.length){ sincronizar(); return; }      /* la hoja manda: se vuelve a leer */
-    if(cb) cb();
-  }, function(e){
-    var msg=e&&e.message?e.message:String(e||''),m=msg.match(/CONFLICTO_CIERRE:\s*(\S+)/);
-    if(m){
-      var pid=m[1],antes=DB.cola.length;
-      DB.cola=DB.cola.filter(function(d){var id=String((d.claves&&d.claves[0]&&d.claves[0].valor)||(d.fila||{}).P_num||'');return !(id===pid&&['R3_Pedidos','R2_Preparacion','R2_Detalle'].indexOf(d.hoja)>=0);});save();
-      toast(pid+' ya estaba LISTO en otro dispositivo. Se descartó sólo su preparación atrasada ('+(antes-DB.cola.length)+' fila(s)); entrega y documento siguen habilitados.');
-      if(DB.cola.length){vaciarCola(cb);return;}sincronizar();return;
-    }
-    SYNC.estado = 'pendiente'; pintarSync();
-  });
-}
+/* =====================================================================
+   v5.5.1 · BUG_021 · AQUI HABIA UNA SEGUNDA DEFINICION DE vaciarCola
+   =====================================================================
+   Y ESTABA MUERTA. Mas abajo en el archivo hay `vaciarCola = function(cb)`,
+   una reasignacion de alto nivel que se ejecuta al cargar la pagina y
+   SOBREESCRIBE esta. Nunca corrio ni una linea de la que estaba aqui.
+
+   POR QUE IMPORTA Y NO ES COSMETICA: las dos NO hacian lo mismo. Esta solo
+   atendia DB.cola; la viva atiende tambien DB.colaPre y DB.colaMov, y
+   maneja distinto el rechazo. Cualquiera que leyera el archivo de arriba
+   abajo -- yo mismo, en una revision anterior -- creeria estar leyendo la
+   logica de la cola y estaria leyendo codigo que no existe en ejecucion.
+   Dos definiciones del mismo nombre es tener dos verdades, y gana la que
+   se cargue despues, que no es la que se lee primero.
+
+   SE PUEDE BORRAR SIN RIESGO, comprobado: entre esta linea y la
+   reasignacion no corre codigo de aplicacion, solo definiciones. El primer
+   llamador real (enviar) se ejecuta cuando el operador ya esta usando la
+   app, y para entonces la unica definicion es la de abajo.
+
+   LA DEFINICION VIVA, la unica, esta junto a colaOcupada_ y maneja las
+   TRES colas: busque `vaciarCola = function(cb)`.
+   ===================================================================== */
 
 /* ---- la hoja es la única fuente de verdad: primero sube, después relee ---- */
 /* =====================================================================
@@ -3917,7 +3916,7 @@ function sincronizar(silencioso){
     else if(!silencioso)    SYNC_PEND_ = false;   /* el completo gana al ligero */
     return;
   }
-  if((DB.colaPre && DB.colaPre.length) || (DB.cola && DB.cola.length) || (DB.colaMov && DB.colaMov.length)){ vaciarCola(sincronizar); return; }
+  if((DB.colaPre && DB.colaPre.length) || (DB.cola && DB.cola.length) || (DB.colaDoc && DB.colaDoc.length) || (DB.colaMov && DB.colaMov.length)){ vaciarCola(sincronizar); return; }
   SYNC.estado = 'leyendo'; pintarSync();
   /* =====================================================================
      v5.1 · C2 · EL CICLO DE 30 SEGUNDOS PIDE SOLO LO QUE SE MUEVE
@@ -4002,7 +4001,11 @@ function cargarCatalogos(){ sincronizar(); }   /* compatibilidad */
 function pintarSync(){ if(cur.n === 'home') render(); }
 function bannerSync(){
   var ico = '<svg class="i sm"><use href="#i-cloud"/></svg>';
-  var pend = (DB.cola || []).length + (DB.colaPre || []).length + (DB.colaMov || []).length;
+  /* v5.5.1 · BUG_020 · las emisiones pendientes de numerar tambien cuentan:
+     si no, el indicador diria «al dia con la hoja» con una remision sin
+     numero esperando. */
+  var pend = (DB.cola || []).length + (DB.colaPre || []).length
+           + (DB.colaDoc || []).length + (DB.colaMov || []).length;
   if(!ONLINE) return '<div class="sync off">' + ico + ' Modo prueba: datos de ejemplo, solo en este celular</div>';
   if(SYNC.estado === 'leyendo') return '<div class="sync">' + ico + ' Leyendo la hoja de cálculo...</div>';
   if(SYNC.estado === 'enviando') return '<div class="sync">' + ico + ' Enviando ' + pend + ' registro(s) a la hoja...</div>';
@@ -12323,18 +12326,22 @@ A.escEjecutar = function(){
   bloquearPie('Emitiendo...');
   var pid = W.pid, tipo = W.tipo, p = pedido(pid);
 
+  /* v5.5.1 · BUG_020 · el mismo defecto que en A.facEjecutar, y hay que
+     corregirlo en los DOS sitios: este camino es el del escritorio y
+     tampoco puede inventar el consecutivo en el dispositivo. Ademas este
+     era peor: no encolaba NADA, asi que la hoja no se enteraba nunca.
+     Ver el comentario completo en A.facEjecutar. */
   if(!ONLINE){
-    /* sin backend solo se puede remision (I-21), y el consecutivo se calcula local */
     if(tipo === 'FE'){ toast('Sin conexion no se puede emitir FE'); W.guardando = false; render(); return; }
-    var max = 0;
-    vig(DB.pedidos).forEach(function(x){
-      var m = x.doc && String(x.doc.numero || '').match(/^R-(\d+)$/);
-      if(m) max = Math.max(max, parseInt(m[1], 10));
-    });
-    p.doc = { tipo:'REMISION', numero:'R-' + pad3(max + 1), fecha:today(), estado:'EMITIDO' };
+    DB.colaDoc = (DB.colaDoc || []).filter(function(j){ return j.pid !== pid; });
+    DB.colaDoc.push({ pid:pid, tipo:'REMISION', pago:null, pedidoEn:nowT(), operador:DB.operador });
+    p.doc = { tipo:'REMISION', numero:'', fecha:today(), estado:'PROVISIONAL', provisional:true };
     save();
-    swap('ok', { t:'Remision ' + p.doc.numero, p:pid + ' quedo con su documento.',
-      rows: kv('Pedido', pid) + kv('Numero', p.doc.numero) + kv('Total', money(facturaDe(p).total)) });
+    W.guardando = false;
+    pintarSync();
+    swap('ok', { t:'Remision pendiente de numerar', p:pid + ' quedo con su documento.',
+      rows: kv('Pedido', pid) + kv('Numero', '<i>lo pone la hoja al volver la señal</i>')
+        + kv('Total', money(facturaDe(p).total)) });
     return;
   }
 
@@ -12695,9 +12702,16 @@ function docHtml(p, rotulo, media, tira){
     + '</div>'
     + '<div class="f2dhr"><i>' + rotulo + '</i>'
     + '<b>' + (esRem ? 'REMISION' : 'FACTURA DE VENTA') + '</b>'
-    + '<u>' + esc((p.doc && p.doc.numero) || p.id) + '</u></div></div>';
+    + '<u>' + esc((p.doc && p.doc.numero) || (p.doc && p.doc.provisional ? 'PROVISIONAL' : p.id)) + '</u></div></div>';
 
-  if(!esRem && !(p.doc && p.doc.numero))
+  /* v5.5.1 · BUG_020 · un numero provisional NO se imprime como si fuera
+     definitivo: el papel dice que falta numerarlo. Antes se imprimia un
+     R-### calculado en el dispositivo que otro dispositivo podia repetir. */
+  if(p.doc && p.doc.provisional)
+    b += '<div class="f2dn">PENDIENTE DE NUMERAR · se emitio sin señal. '
+       + 'El numero de remision lo asigna la hoja al reconectar; este documento '
+       + 'no tiene numero todavia y no debe entregarse como definitivo.</div>';
+  else if(!esRem && !(p.doc && p.doc.numero))
     b += '<div class="f2dn">El numero fiscal lo asigna Alegra al facturar</div>';
 
   /* --- las partes --- */
@@ -14199,29 +14213,33 @@ A.facEjecutar = function(){
      DOS CAMBIOS, y los dos hacen falta:
        1. se vuelve a buscar el pedido AQUI, dentro del callback, en vez de
           confiar en la referencia que se tomo antes de la llamada;
-       2. cuando el numero viene del SERVIDOR, no se sube nada: esa fila ya
-          la escribio el servidor, que es su dueño. Solo se encola en el
-          camino sin conexion, donde la cola es la unica via.
+       2. ya NO se sube la fila de R4 desde aqui, en ningun camino. Con red,
+          esa fila la escribio el servidor, que es su dueño. Sin red, sube
+          la INTENCION de emitir por DB.colaDoc (BUG_020) y el servidor
+          escribe la fila cuando la procese. Subirla desde aqui era el
+          unico motivo por el que se podia borrar un documento.
      La red de seguridad definitiva esta en el servidor (apiGuardar_ ya no
      acepta esas columnas de ninguna cola), porque el navegador vive en
      cache y un dispositivo sin actualizar seguiria borrando.
      ===================================================================== */
-  function listo(numero, estado, delServidor){
+  function listo(numero, estado, provisional){
     var pv = pedido(pid) || p;
     pv.doc = { tipo:tipo, numero:numero || '', fecha:today(), estado:estado,
               forma:pago.forma, medio:pago.medio, plazo:pago.plazo, vence:pago.vence,
-              vendedor:pago.vendedor };
+              vendedor:pago.vendedor, provisional:!!provisional };
     save();
-    if(!delServidor) enviar(packEntrega(pid));
     var f = facturaDe(pv);
     swap('ok', {
-      t: tipo === 'REMISION' ? ('Remision ' + numero) : 'Queda por facturar',
+      t: provisional ? 'Remision pendiente de numerar'
+        : (tipo === 'REMISION' ? ('Remision ' + numero) : 'Queda por facturar'),
       p: pid + ' · ' + esc(pv.cliente),
       lead:'<div class="lead"><div class="d" style="color:var(--ve)">' + money(f.total) + '</div>'
         + '<div class="x">' + esc(pago.forma)
         + (pago.plazo ? '<br>vence ' + dmy(pago.vence) : '') + '</div></div>',
       rows: kv('Documento', tipo === 'FE' ? 'Factura electronica' : 'Remision')
-        + kv('Numero', numero || '<i>lo pone Alegra</i>')
+        + kv('Numero', provisional
+              ? '<i>lo pone la hoja al volver la señal</i>'
+              : (numero || '<i>lo pone Alegra</i>'))
         + kv('Forma de pago', esc(pago.forma))
         + (pago.plazo ? kv('Vence', dmy(pago.vence)) : '')
         + kv('Medio de pago', esc(pago.medio))
@@ -14238,14 +14256,40 @@ A.facEjecutar = function(){
     });
   }
 
+  /* =====================================================================
+     v5.5.1 · BUG_020 · SIN SEÑAL NO SE INVENTA EL NUMERO
+     =====================================================================
+     LO QUE HACIA: calculaba el siguiente R-### contando los pedidos que
+     tenia EN ESE DISPOSITIVO. Dos celulares sin señal contaban lo mismo y
+     los dos imprimian «R-004»: dos remisiones distintas con el mismo
+     numero, que no se arregla borrando porque ya estan en manos de dos
+     clientes. Hay que anular.
+
+     LO QUE HACE AHORA: la decision documental se toma igual -- el operador
+     no se queda bloqueado, puede entregar -- pero el NUMERO lo pone la
+     hoja, que es el unico sitio que ve todos los dispositivos. Mientras no
+     haya señal el documento es PROVISIONAL y se dice asi en la pantalla y
+     en el papel: no se imprime un numero que puede cambiar.
+
+     LA CONVERGENCIA, que es lo que el usuario pidio que no colapsara:
+       · se encola la INTENCION (pedido, tipo, pago), no la fila
+       · al volver la red, vaciarCola llama apiDocumento y la hoja asigna
+         el numero definitivo, uno por pedido, dentro de su candado
+       · si la respuesta se perdio y ya estaba emitido, el servidor lo dice
+         con ya_emitido:true y el navegador ADOPTA el numero de la hoja en
+         vez de volver a emitir. Reintentar no duplica.
+       · un error permanente (por ejemplo que el pedido no este LISTO) NO
+         se reintenta para siempre: se saca de la cola y se avisa, para que
+         un solo pedido mal no bloquee todo lo demas. Eso era el riesgo de
+         colapso.
+     ===================================================================== */
   if(!ONLINE){
     if(tipo === 'FE'){ toast('Sin conexion no se puede emitir FE'); W.guardando = false; render(); return; }
-    var max = 0;
-    vig(DB.pedidos).forEach(function(x){
-      var m = x.doc && String(x.doc.numero || '').match(/^R-(\d+)$/);
-      if(m) max = Math.max(max, parseInt(m[1], 10));
-    });
-    listo('R-' + pad3(max + 1), 'EMITIDO');
+    DB.colaDoc = (DB.colaDoc || []).filter(function(j){ return j.pid !== pid; });
+    DB.colaDoc.push({ pid:pid, tipo:tipo, pago:pago, pedidoEn:nowT(), operador:DB.operador });
+    W.guardando = false;
+    listo('', 'PROVISIONAL', true);
+    pintarSync();
     return;
   }
 
@@ -14814,10 +14858,10 @@ A.escAbrir=function(pid){
    son idempotentes por llave; conservar el lote permite corregir y reintentar. */
 var colaOcupada_=false;
 vaciarCola=function(cb){
-  DB.cola=DB.cola||[];DB.colaPre=DB.colaPre||[];DB.colaMov=DB.colaMov||[];
+  DB.cola=DB.cola||[];DB.colaPre=DB.colaPre||[];DB.colaMov=DB.colaMov||[];DB.colaDoc=DB.colaDoc||[];
   if(!ONLINE){pintarSync();return;}
   if(colaOcupada_)return;
-  function mas(){return DB.colaPre.length||DB.cola.length||DB.colaMov.length;}
+  function mas(){return DB.colaPre.length||DB.cola.length||DB.colaDoc.length||DB.colaMov.length;}
   function continuar(){colaOcupada_=false;if(mas()){vaciarCola(cb);return;}SYNC.estado='listo';pintarSync();if(cb)cb();}
   function pendiente(){colaOcupada_=false;SYNC.estado='pendiente';save();pintarSync();}
   colaOcupada_=true;
@@ -14861,6 +14905,60 @@ vaciarCola=function(cb){
       }
       pendiente();
     });
+    return;
+  }
+  /* =====================================================================
+     v5.5.1 · BUG_020 · LAS EMISIONES PENDIENTES DE NUMERAR
+     =====================================================================
+     VA DESPUES de DB.cola a proposito: apiDocumento necesita que las lineas
+     del pedido y su fila de R4 ya esten en la hoja para poder validar que
+     hay algo que cobrar. Si se procesara antes, fallaria siempre.
+
+     LOS TRES DESENLACES, y cada uno tiene su salida para que la cola nunca
+     se quede atascada:
+       ok              se adopta el numero que asigno la hoja
+       ya_emitido      la respuesta anterior se perdio pero el documento SI
+                       quedo: se adopta el de la hoja. NO se vuelve a
+                       emitir, asi que un reintento no puede duplicar.
+       error permanente  se SACA de la cola y se avisa en grave. Dejarlo
+                       reintentando bloquearia todas las demas escrituras
+                       por un solo pedido mal: eso era el colapso.
+     Un fallo de TRANSPORTE no es ninguno de los tres: ahi no se decide
+     nada, se deja el trabajo en la cola y se reintenta luego.
+     ===================================================================== */
+  if(DB.colaDoc.length){
+    var docJob=DB.colaDoc[0];SYNC.estado='enviando';pintarSync();
+    srv('apiDocumento',[docJob.pid,docJob.tipo,docJob.operador||DB.operador,docJob.pago||{}],function(r){
+      var pj=pedido(docJob.pid);
+      if(r&&r.ok){
+        if(pj){pj.doc={tipo:r.tipo,numero:r.numero||'',fecha:r.fecha||today(),estado:r.estado,
+          forma:r.forma||'',medio:r.medio||'',plazo:Number(r.plazo)||0,vence:r.vence||'',
+          vendedor:r.vendedor||'',provisional:false};}
+        DB.colaDoc.shift();save();
+        toast(docJob.pid+' quedo con su numero definitivo: '+(r.numero||'(lo pone Alegra)'));
+        continuar();return;
+      }
+      if(r&&r.ya_emitido){
+        /* la hoja ya lo tenia: se adopta lo que diga ELLA, no lo que creamos */
+        if(pj&&r.doc){pj.doc={tipo:r.doc.tipo,numero:r.doc.numero||'',fecha:r.doc.fecha||'',
+          estado:r.doc.estado||'',forma:r.doc.forma||'',medio:r.doc.medio||'',
+          plazo:Number(r.doc.plazo)||0,vence:r.doc.vence||'',vendedor:r.doc.vendedor||'',
+          provisional:false};}
+        DB.colaDoc.shift();save();
+        toast(docJob.pid+' ya estaba emitido en la hoja como '+((r.doc&&r.doc.numero)||'(sin numero)')+
+              '. Se tomo el de la hoja; no se emitio dos veces.');
+        /* la bandera SE REPONE antes de salir: si no, la cola se queda
+           tomada para siempre y no vuelve a subir nada. Mismo patron que
+           las demas salidas por sincronizar de esta funcion. */
+        colaOcupada_=false;if(mas()){vaciarCola(cb);return;}sincronizar(true);return;
+      }
+      /* error permanente: no se reintenta, no bloquea, y se dice fuerte */
+      if(pj&&pj.doc&&pj.doc.provisional){pj.doc=null;}
+      DB.colaDoc.shift();save();
+      toast('NO se pudo emitir la remision de '+docJob.pid+': '+((r&&r.error)||'la hoja no acepto el documento')+
+            ' · Se saco de la cola para no bloquear lo demas. Hay que emitirla a mano.',true);
+      colaOcupada_=false;if(mas()){vaciarCola(cb);return;}sincronizar(true);return;
+    },function(){pendiente();});
     return;
   }
   if(DB.colaMov.length){
