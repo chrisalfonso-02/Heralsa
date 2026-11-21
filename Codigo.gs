@@ -365,6 +365,50 @@ function colaPuedeEscribirDocumento_(traeDoc, yaTieneDoc){
   return !!txt(traeDoc) && !yaTieneDoc;
 }
 
+/* =====================================================================
+   v5.5.2 · BUG_023 · «P-021 YA ESTABA LISTO EN OTRO DISPOSITIVO» EN BUCLE
+   =====================================================================
+   LA CONTRADICCION, y esta escrita en el propio mensaje de error que se
+   lanzaba: decia «Entrega y documento siguen habilitados; la preparacion no
+   se puede sobrescribir»... y acto seguido BLOQUEABA la fila de R3 que
+   manda la entrega. Porque registrar una entrega sube dos filas:
+   packEntrega (R4) y packPedido (R3, con Estado = ENTREGADO). Y un pedido
+   que se entrega esta necesariamente LISTO, asi que la guarda disparaba
+   SIEMPRE. La guarda prohibia justo lo que su propio mensaje prometia.
+
+   LO QUE OCULTABA: el navegador descartaba la fila de R3, subia solo la de
+   R4, y la entrega quedaba en R4 mientras R3 NUNCA recibia
+   Estado = ENTREGADO. No se notaba porque derivarPar_ deduce ENTREGADO de
+   la fecha te: la derivacion tapaba una escritura que no ocurria. Es el
+   mismo patron de media escritura que vengo cerrando.
+
+   LA REGLA CORRECTA no es «cerrado = no se toca», es EL EXPEDIENTE AVANZA
+   Y NO RETROCEDE:
+     R2_Preparacion y R2_Detalle   nunca si el pedido ya esta cerrado. Esa
+                                   era la intencion original y se conserva:
+                                   la preparacion no se reescribe despues.
+     R3_Pedidos                    se permite si el estado que llega es
+                                   igual o MAS avanzado que el de la hoja.
+                                   LISTO -> ENTREGADO es avanzar: se
+                                   permite. ENTREGADO -> EN_PREPARACION es
+                                   retroceder: se bloquea.
+   Asi la entrega puede escribir su propio estado y ningun dispositivo con
+   datos viejos puede reabrir un pedido cerrado.
+   ===================================================================== */
+var ORDEN_ESTADO_ = { '':0, 'NUEVO':1, 'EN_PREPARACION':2, 'LISTO':3, 'ENTREGADO':4 };
+
+function colaPuedeEscribirExpediente_(nombreHoja, estadoEntrante, estadoHoja, etapaHoja){
+  var eh = txt(estadoHoja).toUpperCase(), th = txt(etapaHoja).toUpperCase();
+  var cerrado = (eh === 'LISTO' || eh === 'ENTREGADO' || th === 'LISTO');
+  if(nombreHoja === 'R2_Preparacion' || nombreHoja === 'R2_Detalle') return !cerrado;
+  if(nombreHoja !== 'R3_Pedidos') return true;      /* no es asunto de esta regla */
+  var ee = txt(estadoEntrante).toUpperCase();
+  if(!ee) return true;        /* no trae estado: no mueve el expediente */
+  var oe = ORDEN_ESTADO_[ee], oh = ORDEN_ESTADO_[eh];
+  if(oe === undefined || oh === undefined) return true;   /* valor raro: no se adivina */
+  return oe >= oh;
+}
+
 /* COPIA EXACTA de la lista de columnas de R4 que proyecta el navegador
    (index.html, sheetData(4)). Se tiene aqui para poder comprobar que
    NINGUNA columna de documento que el navegador sepa escribir se quede sin
@@ -409,6 +453,31 @@ function heralsaVerificarDocumento(){
   });
   L('');
 
+  L('--- 1b · la regla del expediente: avanza, no retrocede ---');
+  var casosExp = [
+    { h:'R3_Pedidos', e:'ENTREGADO', eh:'LISTO', th:'LISTO', esperado:true,
+      caso:'la ENTREGA escribe su estado en un pedido LISTO  <-- el bucle de P-021' },
+    { h:'R3_Pedidos', e:'LISTO', eh:'LISTO', th:'LISTO', esperado:true,
+      caso:'reenvio del mismo estado (idempotente)' },
+    { h:'R3_Pedidos', e:'EN_PREPARACION', eh:'ENTREGADO', th:'LISTO', esperado:false,
+      caso:'un dispositivo con datos viejos intenta REABRIR un pedido entregado' },
+    { h:'R3_Pedidos', e:'', eh:'LISTO', th:'LISTO', esperado:true,
+      caso:'la fila no trae estado: no mueve el expediente' },
+    { h:'R2_Detalle', e:'', eh:'LISTO', th:'LISTO', esperado:false,
+      caso:'reescribir la PREPARACION de un pedido cerrado' },
+    { h:'R2_Preparacion', e:'', eh:'EN_PREPARACION', th:'DESPACHAR', esperado:true,
+      caso:'preparacion de un pedido todavia abierto' },
+    { h:'R4_Entregas', e:'', eh:'LISTO', th:'LISTO', esperado:true,
+      caso:'R4 no es asunto de esta regla (tiene la suya)' }
+  ];
+  casosExp.forEach(function(c){
+    var r = colaPuedeEscribirExpediente_(c.h, c.e, c.eh, c.th);
+    var ok = (r === c.esperado);
+    if(!ok) fallos++;
+    L('   ' + (ok ? 'OK  ' : 'FALLA') + ' · ' + (r ? 'se permite' : 'se bloquea') + ' · ' + c.caso);
+  });
+  L('');
+
   L('--- 2 · ninguna columna de documento del navegador sin proteger ---');
   var sinProteger = COLS_R4_NAVEGADOR_.filter(function(c){
     return /^Doc_|^Forma_pago$|^Medio_pago$|^Plazo_dias$|^Vencimiento$|^Alegra_|^CUFE$|^Estado_DIAN$|^Emitido_en$/.test(c)
@@ -441,7 +510,7 @@ function apiGuardar_(datos){
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try{
-    var n = 0, bloqueadas = [], rechazadas = [];
+    var n = 0, bloqueadas = [], rechazadas = [], rechazadas_cierre = [], saltar_ = {};
 
     /* Ninguna escritura del lote se adelanta a un conflicto de cierre. */
     /* v5.3 · RENDIMIENTO · este buscarEn(filas(H.pedidos)) estaba DENTRO del
@@ -453,14 +522,46 @@ function apiGuardar_(datos){
        criterio que cabsCierre_: ver el comentario de la regla del documento
        mas abajo, en el bucle de escritura. */
     var entActuales_ = null;
-    (datos || []).forEach(function(d){
-      if(d && (d.hoja === H.pedidos || d.hoja === H.prep || d.hoja === H.prepDet)){
-        var pidCierre = txt((d.claves && d.claves[0] && d.claves[0].valor) || (d.fila || {}).P_num);
-        if(pidCierre && !cabsCierre_) cabsCierre_ = indicePor_(filas(H.pedidos), 'P_num');
-        var cabCierre = pidCierre ? (cabsCierre_[pidCierre] || null) : null;
-        if(cabCierre && (txt(cabCierre.Estado).toUpperCase() === 'LISTO' || txt(cabCierre.Etapa_preparacion).toUpperCase() === 'LISTO'))
-          throw new Error('CONFLICTO_CIERRE: ' + pidCierre + ' ya esta LISTO. Entrega y documento siguen habilitados; la preparacion no se puede sobrescribir.');
-      }
+    /* =================================================================
+       v5.5.2 · BUG_023 · SE RECHAZA LA FILA, NO EL LOTE
+       =================================================================
+       Esto lanzaba una EXCEPCION que botaba el lote COMPLETO, hasta 20
+       filas, por una sola que no cuadrara. Y es justo lo contrario del
+       principio que este mismo archivo declara doce lineas mas abajo:
+       «si una esta mal, se rechaza solo ella, no el lote entero. Rechazar
+       todo haria que un error de una linea botara el trabajo de un dia».
+       La validacion de lineas lo cumplia; esta guarda no.
+
+       PEOR TODAVIA, y es lo que colapso la aplicacion: el navegador tenia
+       que ADIVINAR cual fila sobraba leyendo el numero de pedido DENTRO
+       del texto del mensaje de error. Cuando su filtro no acertaba,
+       descartaba 0 filas y volvia a mandar el MISMO lote, que volvia a
+       fallar: un bucle infinito con un aviso cada pocos segundos. Hacer
+       que el cliente deduzca de una cadena de texto cual dato rechazo el
+       servidor es fragil por construccion.
+
+       AHORA el servidor dice EXACTAMENTE que filas no escribio y por que,
+       en un campo de datos (rechazadas_cierre), no en un mensaje. El
+       navegador las saca por identidad -- hoja y clave -- sin interpretar
+       texto. Lo demas del lote SI se escribe.
+       ================================================================= */
+    (datos || []).forEach(function(d, i){
+      if(!d || [H.pedidos, H.prep, H.prepDet].indexOf(d.hoja) < 0) return;
+      var pidCierre = txt((d.claves && d.claves[0] && d.claves[0].valor) || (d.fila || {}).P_num);
+      if(pidCierre && !cabsCierre_) cabsCierre_ = indicePor_(filas(H.pedidos), 'P_num');
+      var cabCierre = pidCierre ? (cabsCierre_[pidCierre] || null) : null;
+      if(!cabCierre) return;
+      if(colaPuedeEscribirExpediente_(d.hoja, (d.fila || {}).Estado,
+                                      cabCierre.Estado, cabCierre.Etapa_preparacion)) return;
+      saltar_[i] = true;
+      rechazadas_cierre.push({
+        hoja: d.hoja, id: pidCierre,
+        clave: (d.claves || []).map(function(c){ return txt(c.columna) + '=' + txt(c.valor); }).join(' · '),
+        motivo: (d.hoja === H.pedidos)
+          ? (pidCierre + ' esta en ' + (txt(cabCierre.Estado) || '(vacio)') + ' en la hoja y llega como ' +
+             (txt((d.fila || {}).Estado) || '(vacio)') + ': el expediente no retrocede.')
+          : (pidCierre + ' ya esta cerrado: la preparacion no se reescribe. Entrega y documento siguen habilitados.')
+      });
     });
 
     /* primero se validan TODAS las lineas del lote: si una esta mal, se
@@ -477,6 +578,7 @@ function apiGuardar_(datos){
 
     for(var i = 0; i < datos.length; i++){
       var d = datos[i];
+      if(saltar_[i]) continue;          /* v5.5.2 · rechazada por la regla del expediente */
       if(d && d.hoja === H.prepDet){
         var ref = txt((d.fila || {})['Referencia']);
         if(malas[ref]){ rechazadas.push(malas[ref]); continue; }
@@ -581,7 +683,8 @@ function apiGuardar_(datos){
       if(r.bloqueada) bloqueadas.push(r.id || d.hoja);
       else if(r.escrita) n++;
     }
-    return { ok:true, escritas:n, bloqueadas:bloqueadas, rechazadas:rechazadas };
+    return { ok:true, escritas:n, bloqueadas:bloqueadas, rechazadas:rechazadas,
+             rechazadas_cierre:rechazadas_cierre };
   } finally { lock.releaseLock(); }
 }
 
@@ -1962,7 +2065,7 @@ function cerrarHuecosMigracion(soloSimular){
 }
 
 /* ===================== PRUEBA Y DIAGNOSTICO ===================== */
-var VERSION_BACKEND = 'v5.5.1';
+var VERSION_BACKEND = 'v5.5.2';
 
 /**
  * Lee el archivo Index.html REAL del proyecto y dice si quedo bien pegado.
@@ -4115,7 +4218,7 @@ function apiAnalisisFinanciero(token){
 /** Ejecutar esta. Dice si los tres archivos quedaron bien pegados. */
 function heralsaVersion(){
   Logger.log('=========== VERSIONES ===========');
-  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.5.1');
+  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.5.2');
   Logger.log('Fase 2    : ' + VERSION_FASE2 + '      <- debe decir f2.2');
   var vIndex = null, largo = 0, cierra = false;
   try{
@@ -4123,7 +4226,7 @@ function heralsaVersion(){
     largo  = t.length;
     vIndex = (t.match(/VERSION_APP\s*=\s*'([^']+)'/) || [])[1] || null;
     cierra = t.replace(/\s+$/, '').slice(-7) === '</html>';
-    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.5.1');
+    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.5.2');
     Logger.log('Termina en </html>: ' + (cierra ? 'SI' : 'NO  *** QUEDO CORTADO AL PEGAR ***'));
     /* El tamano que devuelve getContent() NO coincide con el del archivo
        fuente: HtmlService no entrega el texto literal. Comparar tamanos aqui
@@ -4138,7 +4241,7 @@ function heralsaVersion(){
   }
   Logger.log('---------------------------------');
   if(vIndex === VERSION_BACKEND && cierra)
-    Logger.log('>>> TODO PAREJO EN v5.5.1. El codigo esta bien pegado.');
+    Logger.log('>>> TODO PAREJO EN v5.5.2. El codigo esta bien pegado.');
   else if(vIndex && vIndex !== VERSION_BACKEND)
     Logger.log('>>> NO COINCIDEN. Vuelva a pegar el archivo que se quedo atras.');
   else
