@@ -1264,6 +1264,23 @@ function apiPreparacion_(pid, accion, datos, operador){
       var totalW = actuales.reduce(function(sum,r){return sum + numero(r.Cant_despachada);},0);
       if(salida === 'LISTO' && faltas.length) throw new Error('No puede quedar LISTO completo: faltan unidades. Elige enviar incompleto o esperar.');
       if(salida === 'INCOMPLETO' && (!faltas.length || !(totalW > 0))) throw new Error('Enviar incompleto exige un faltante real y al menos una unidad despachada.');
+      /* =================================================================
+         v5.5.4 · BUG_030 · EL HUECO QUE TODAVIA PODIA CREAR UN «P-001»
+         =================================================================
+         La salida INCOMPLETO si exigia al menos una unidad despachada
+         (totalW > 0). La salida LISTO no: solo exigia que no faltara nada,
+         y «no falta nada» es cierto tambien cuando todas las lineas piden
+         0 y entregan 0. Por ahi se podia cerrar un pedido LISTO con CERO
+         unidades, que es exactamente la forma de P-001 en el libro: LISTO,
+         sin unidades despachadas, imposible de facturar y de entregar.
+         Como el usuario quiere limpiar la base y empezar de cero, esto era
+         lo que haria volver el mismo dato malo. La guarda va AQUI, en el
+         punto donde el cierre se convierte en un hecho, y no depende de
+         como se llego a tener lineas en cero.
+         ================================================================= */
+      if(!(totalW > 0)) throw new Error('No se puede cerrar ' + pid + ' sin ninguna unidad despachada. ' +
+        'Un pedido cerrado con cero unidades no se puede facturar ni entregar, y queda atascado. ' +
+        'Registre las cantidades en Despachar, o inhabilite el pedido si no se va a surtir.');
       if(['LISTO','INCOMPLETO'].indexOf(salida) < 0) throw new Error('Salida de cierre desconocida.');
       nuevaEtapa = 'LISTO';
       actuales.forEach(function(r){
@@ -2065,7 +2082,7 @@ function cerrarHuecosMigracion(soloSimular){
 }
 
 /* ===================== PRUEBA Y DIAGNOSTICO ===================== */
-var VERSION_BACKEND = 'v5.5.3';
+var VERSION_BACKEND = 'v5.5.4';
 
 /**
  * Lee el archivo Index.html REAL del proyecto y dice si quedo bien pegado.
@@ -4218,7 +4235,7 @@ function apiAnalisisFinanciero(token){
 /** Ejecutar esta. Dice si los tres archivos quedaron bien pegados. */
 function heralsaVersion(){
   Logger.log('=========== VERSIONES ===========');
-  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.5.3');
+  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.5.4');
   Logger.log('Fase 2    : ' + VERSION_FASE2 + '      <- debe decir f2.2');
   var vIndex = null, largo = 0, cierra = false;
   try{
@@ -4226,7 +4243,7 @@ function heralsaVersion(){
     largo  = t.length;
     vIndex = (t.match(/VERSION_APP\s*=\s*'([^']+)'/) || [])[1] || null;
     cierra = t.replace(/\s+$/, '').slice(-7) === '</html>';
-    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.5.3');
+    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.5.4');
     Logger.log('Termina en </html>: ' + (cierra ? 'SI' : 'NO  *** QUEDO CORTADO AL PEGAR ***'));
     /* El tamano que devuelve getContent() NO coincide con el del archivo
        fuente: HtmlService no entrega el texto literal. Comparar tamanos aqui
@@ -4241,7 +4258,7 @@ function heralsaVersion(){
   }
   Logger.log('---------------------------------');
   if(vIndex === VERSION_BACKEND && cierra)
-    Logger.log('>>> TODO PAREJO EN v5.5.3. El codigo esta bien pegado.');
+    Logger.log('>>> TODO PAREJO EN v5.5.4. El codigo esta bien pegado.');
   else if(vIndex && vIndex !== VERSION_BACKEND)
     Logger.log('>>> NO COINCIDEN. Vuelva a pegar el archivo que se quedo atras.');
   else
