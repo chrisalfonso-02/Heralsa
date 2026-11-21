@@ -319,3 +319,174 @@ function heralsaDiagnosticarDocumento(){
   return { ok:true, pedido:pid, filaLectura:filaLectura, filaEscritura:filaEscritura,
            invisibles:invisibles.length, duplicados:duplicados, paro:paro };
 }
+
+
+/* =====================================================================
+   HERALSA · ESPEJO DE LA BASE DE DATOS PARA REVISION
+   =====================================================================
+   PARA QUE: hoy, cuando algo falla, yo solo veo lo que usted alcanza a
+   copiar de un registro. Eso es lento y parcial, y en el ultimo defecto
+   fue decisivo: la fila 22 de R4 tenia la huella, pero hasta que usted no
+   ejecuto el diagnostico yo no podia verla. Esto hace con la BASE DE DATOS
+   lo que ya hacemos con el CODIGO en GitHub: dejar una copia que las dos
+   partes pueden mirar.
+
+   COMO FUNCIONA: exporta cada hoja a JSON y la sube a un repositorio
+   PRIVADO suyo, con la API de GitHub. Cada ejecucion es un commit, asi que
+   queda el historial: se puede comparar el antes y el despues de una
+   operacion. De paso es un respaldo con fecha.
+
+   LAS TRES PROTECCIONES, y ninguna es opcional:
+
+   1. SE NIEGA A SUBIR A UN REPOSITORIO PUBLICO. Lo comprueba preguntandole
+      a GitHub antes de subir nada. El repositorio del codigo es publico; el
+      de los datos TIENE que ser privado, porque aqui hay nombres de
+      clientes, NIT, telefonos y direcciones. Un dato publicado no se
+      despublica: queda en cachés y en copias ajenas.
+
+   2. NUNCA SUBE CAT_Usuarios. Esa hoja tiene Clave_hash y Sal. Una copia
+      de eso fuera del libro es material para atacar las contraseñas con
+      calma y sin que nadie lo note. La lista de exclusion esta en el
+      codigo y no se puede desactivar con un parametro.
+
+   3. LA CLAVE NO VIVE EN EL CODIGO. Vive en las propiedades del proyecto,
+      que no se publican en GitHub ni se ven en la hoja. Y es una clave de
+      alcance fino: un solo repositorio, solo Contenido, solo lectura y
+      escritura. Se revoca en cualquier momento sin tocar nada mas.
+
+   PREPARACION, una sola vez:
+     1. En GitHub: New repository, nombre «Heralsa-datos», marque PRIVATE.
+     2. En GitHub: Settings de su cuenta > Developer settings >
+        Personal access tokens > Fine-grained tokens > Generate new token.
+          Repository access : Only select repositories > Heralsa-datos
+          Permissions       : Repository permissions > Contents >
+                              Read and write
+          Expiration        : 30 dias (se renueva igual que la de Alegra)
+     3. En el editor de Apps Script: Configuracion del proyecto (el
+        engranaje) > Propiedades de la secuencia de comandos >
+        Agregar propiedad:
+          GITHUB_TOKEN        = la clave que acaba de generar
+          GITHUB_REPO_DATOS   = chrisalfonso-02/Heralsa-datos
+     4. Ejecute heralsaPublicarSnapshot().
+
+   Si prefiere no crear ninguna clave, no pasa nada: seguimos con los
+   registros pegados a mano. Es mas lento y yo veo menos, pero funciona y
+   no expone nada. La decision es suya.
+   ===================================================================== */
+
+/* Hojas que NO se copian NUNCA. No es configurable a proposito. */
+var SNAPSHOT_PROHIBIDAS_ = ['CAT_Usuarios'];
+
+function heralsaPublicarSnapshot(){
+  function L(s){ Logger.log(s === undefined ? '' : s); }
+  var P = PropertiesService.getScriptProperties();
+  var tok  = txt(P.getProperty('GITHUB_TOKEN'));
+  var repo = txt(P.getProperty('GITHUB_REPO_DATOS'));
+
+  L('===== ESPEJO DE LA BASE DE DATOS =====');
+  if(!tok || !repo){
+    L('NO ESTA CONFIGURADO, y por eso no se subio nada.');
+    L('Falta: ' + (!tok ? 'GITHUB_TOKEN ' : '') + (!repo ? 'GITHUB_REPO_DATOS' : ''));
+    L('Lea el procedimiento en el comentario que esta justo encima de esta');
+    L('funcion: son cuatro pasos y se hacen una sola vez.');
+    return { ok:false, falta_configuracion:true };
+  }
+  if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)){
+    L('GITHUB_REPO_DATOS tiene que ser «usuario/repositorio». Llego: ' + repo);
+    return { ok:false };
+  }
+
+  function gh(ruta, metodo, cuerpo){
+    var op = { method: metodo || 'get', muteHttpExceptions: true,
+               contentType: 'application/json',
+               headers: { 'Authorization': 'Bearer ' + tok,
+                          'Accept': 'application/vnd.github+json',
+                          'X-GitHub-Api-Version': '2022-11-28' } };
+    if(cuerpo) op.payload = JSON.stringify(cuerpo);
+    var r = UrlFetchApp.fetch('https://api.github.com' + ruta, op);
+    var cod = r.getResponseCode(), txto = r.getContentText(), dat = null;
+    try{ dat = JSON.parse(txto); }catch(e){}
+    return { codigo: cod, datos: dat, texto: txto };
+  }
+
+  /* ---- PROTECCION 1 · el repositorio tiene que ser PRIVADO ---- */
+  var info = gh('/repos/' + repo);
+  if(info.codigo === 401 || info.codigo === 403){
+    L('LA CLAVE NO SIRVE (' + info.codigo + '). Puede estar vencida, revocada, o sin el');
+    L('permiso Contents: Read and write sobre ' + repo + '.');
+    L('Genere otra y actualice GITHUB_TOKEN. Respuesta: ' + info.texto.substring(0,200));
+    return { ok:false };
+  }
+  if(info.codigo === 404){
+    L('NO EXISTE o la clave no lo alcanza: ' + repo);
+    L('Compruebe el nombre, y que al generar la clave escogiera ESE repositorio.');
+    return { ok:false };
+  }
+  if(info.codigo >= 400){ L('GitHub respondio ' + info.codigo + ': ' + info.texto.substring(0,300)); return { ok:false }; }
+  if(!info.datos || info.datos.private !== true){
+    L('>>> NO SE SUBIO NADA, Y ESTA BIEN QUE NO SE HAYA SUBIDO.');
+    L('>>> ' + repo + ' es PUBLICO.');
+    L('>>> Aqui van nombres de clientes, NIT, telefonos y direcciones. Un dato');
+    L('>>> publicado no se despublica: queda en cachés y en copias ajenas.');
+    L('>>> Ponga el repositorio en Private (Settings > General > Change');
+    L('>>> visibility) o cree uno privado, y vuelva a ejecutar.');
+    return { ok:false, repositorio_publico:true };
+  }
+  L('Repositorio: ' + repo + ' · privado: SI');
+
+  /* ---- armado del espejo ---- */
+  var nombres = [];
+  libro().getSheets().forEach(function(sh){ nombres.push(sh.getName()); });
+  var copiadas = [], omitidas = [], espejo = { generado: ahora(), libro: libro().getName(), hojas: {} };
+
+  nombres.forEach(function(nom){
+    if(SNAPSHOT_PROHIBIDAS_.indexOf(nom) >= 0){ omitidas.push(nom); return; }
+    var sh = libro().getSheetByName(nom);
+    var ult = sh.getLastRow(), anc = Math.max(sh.getLastColumn(), 1);
+    if(ult < 1){ espejo.hojas[nom] = { columnas: [], filas: [] }; copiadas.push(nom + ' (vacia)'); return; }
+    var todo = sh.getRange(1, 1, ult, anc).getValues();
+    var cols = todo[0].map(function(c){ return txt(c); });
+    var tz = tzLibro_(), fil = [];
+    /* se copian TODAS las filas tal como estan, incluidas las que filas()
+       esconde: justo esas son las que hay que poder ver. La fila fisica va
+       en el espejo para poder señalarla sin ambiguedad. */
+    for(var i = 1; i < todo.length; i++){
+      var o = { __fila: i + 1 };
+      for(var j = 0; j < cols.length; j++){
+        var v = todo[i][j];
+        o[cols[j] || ('col' + (j + 1))] = (v instanceof Date) ? fechaTexto(v, tz) : v;
+      }
+      fil.push(o);
+    }
+    espejo.hojas[nom] = { columnas: cols, filas: fil };
+    copiadas.push(nom + ' (' + fil.length + ')');
+  });
+
+  var cuerpoJson = JSON.stringify(espejo, null, 1);
+  L('Hojas copiadas : ' + copiadas.join(' · '));
+  L('Hojas OMITIDAS : ' + (omitidas.join(' · ') || 'ninguna') + '   <- proteccion 2, no es configurable');
+  L('Tamaño         : ' + cuerpoJson.length + ' caracteres');
+
+  /* ---- subida: un archivo fijo (el estado de ahora) y uno con fecha ---- */
+  function subir(ruta, texto){
+    var actual = gh('/repos/' + repo + '/contents/' + ruta);
+    var cuerpo = { message: 'Espejo de la base de datos · ' + ahora(),
+                   content: Utilities.base64Encode(texto, Utilities.Charset.UTF_8) };
+    if(actual.codigo === 200 && actual.datos && actual.datos.sha) cuerpo.sha = actual.datos.sha;
+    var r = gh('/repos/' + repo + '/contents/' + ruta, 'put', cuerpo);
+    if(r.codigo >= 400){ L('   FALLA ' + ruta + ' · ' + r.codigo + ' · ' + r.texto.substring(0,200)); return false; }
+    L('   OK    ' + ruta + ' · commit ' + ((r.datos && r.datos.commit && r.datos.commit.sha) || '').substring(0,10));
+    return true;
+  }
+
+  var sello = Utilities.formatDate(new Date(), tzLibro_(), 'yyyy-MM-dd_HHmm');
+  L('');
+  var ok1 = subir('espejo/ahora.json', cuerpoJson);
+  var ok2 = subir('espejo/historial/' + sello + '.json', cuerpoJson);
+
+  L('');
+  if(ok1) L('>>> LISTO. El estado de ahora esta en espejo/ahora.json y queda el');
+  if(ok1) L('>>> historial fechado al lado. Cada ejecucion es un commit, asi que se');
+  if(ok1) L('>>> puede comparar el antes y el despues de cualquier operacion.');
+  return { ok: ok1, repositorio: repo, hojas: copiadas.length, omitidas: omitidas, sello: sello };
+}
