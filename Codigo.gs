@@ -1962,7 +1962,7 @@ function cerrarHuecosMigracion(soloSimular){
 }
 
 /* ===================== PRUEBA Y DIAGNOSTICO ===================== */
-var VERSION_BACKEND = 'v5.5';
+var VERSION_BACKEND = 'v5.5.1';
 
 /**
  * Lee el archivo Index.html REAL del proyecto y dice si quedo bien pegado.
@@ -2713,8 +2713,25 @@ function apiDocumento_(pid, tipo, operador, pago){
     if(estCab_ !== 'LISTO' && estCab_ !== 'ENTREGADO')
       return { ok:false, error:'El pedido ' + pid + ' esta en "' + (txt(cabDoc.Estado) || '(vacio)') +
                '" y para emitir tiene que estar LISTO. Termine el cierre en 4 Finalizar.' };
+    /* =================================================================
+       v5.5.1 · BUG_020 · ESTE «NO» TIENE QUE SER UTIL, NO SOLO CORRECTO
+       =================================================================
+       Negarse a emitir dos veces estaba bien. Lo que faltaba es DECIR que
+       el documento ya existe de forma que el navegador pueda converger:
+       si una emision sin señal se encola y la respuesta se pierde, el
+       reintento llega aqui, y con un error pelado el navegador no sabe si
+       fracaso o si ya estaba hecho. Con ya_emitido y el documento de la
+       hoja, adopta el numero que YA existe en vez de intentarlo otra vez.
+       Reintentar deja de poder duplicar, y la cola no se atasca.
+       ================================================================= */
     if(txt(ya['Doc_tipo']) || txt(ya['Doc_numero']))
-      return { ok:false, error:'El pedido ' + pid + ' ya tiene una decisión documental ' +
+      return { ok:false, ya_emitido:true,
+               doc:{ tipo:txt(ya['Doc_tipo']), numero:txt(ya['Doc_numero']),
+                     fecha:txt(ya['Doc_fecha']), estado:txt(ya['Doc_estado']),
+                     forma:txt(ya['Forma_pago']), medio:txt(ya['Medio_pago']),
+                     plazo:numero(ya['Plazo_dias']) || 0, vence:txt(ya['Vencimiento']),
+                     vendedor:txt(ya['Doc_vendedor']) },
+               error:'El pedido ' + pid + ' ya tiene una decisión documental ' +
                                (txt(ya['Doc_tipo']) || txt(ya['Doc_numero'])) + '. Un pedido es una entrega y un ' +
                                'documento: no se puede emitir dos veces.' };
 
@@ -2788,6 +2805,7 @@ function apiDocumento_(pid, tipo, operador, pago){
                     Motivo:'Documento emitido · ' + forma
                       + (esCredito ? ' a ' + plazo + ' dias' : '') + ' · ' + medio }], operador);
     return { ok:true, tipo:tipo, numero:num, total:f.total, estado:estado,
+             fecha:fechaHoy(), fila:r.fila,
              forma:forma, medio:medio, plazo:esCredito ? plazo : 0,
              vence:vence, vendedor:vendedorDoc,
              avisoColumna:(vendedorDoc && ixE['Doc_vendedor'] === undefined)
@@ -4097,7 +4115,7 @@ function apiAnalisisFinanciero(token){
 /** Ejecutar esta. Dice si los tres archivos quedaron bien pegados. */
 function heralsaVersion(){
   Logger.log('=========== VERSIONES ===========');
-  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.5');
+  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.5.1');
   Logger.log('Fase 2    : ' + VERSION_FASE2 + '      <- debe decir f2.2');
   var vIndex = null, largo = 0, cierra = false;
   try{
@@ -4105,7 +4123,7 @@ function heralsaVersion(){
     largo  = t.length;
     vIndex = (t.match(/VERSION_APP\s*=\s*'([^']+)'/) || [])[1] || null;
     cierra = t.replace(/\s+$/, '').slice(-7) === '</html>';
-    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.5');
+    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.5.1');
     Logger.log('Termina en </html>: ' + (cierra ? 'SI' : 'NO  *** QUEDO CORTADO AL PEGAR ***'));
     /* El tamano que devuelve getContent() NO coincide con el del archivo
        fuente: HtmlService no entrega el texto literal. Comparar tamanos aqui
@@ -4120,7 +4138,7 @@ function heralsaVersion(){
   }
   Logger.log('---------------------------------');
   if(vIndex === VERSION_BACKEND && cierra)
-    Logger.log('>>> TODO PAREJO EN v5.5. El codigo esta bien pegado.');
+    Logger.log('>>> TODO PAREJO EN v5.5.1. El codigo esta bien pegado.');
   else if(vIndex && vIndex !== VERSION_BACKEND)
     Logger.log('>>> NO COINCIDEN. Vuelva a pegar el archivo que se quedo atras.');
   else
@@ -4178,49 +4196,108 @@ function heralsaDiagnosticarIndex(){
      decia que faltaban cinco cambios cuando el archivo estaba completo.
      Estas marcas son codigo que se ejecuta, asi que sobreviven.
      ===================================================================== */
-  var marcas = [
-    ["VERSION_APP = 'v5.1'",  1, 'cambio 36 · version de la app'],
-    ["VERSION_F2 = 'f2.2'",   1, 'cambio 36 · version de Fase 2'],
-    ['A.alegraGenerar',       2, 'cambio 23 · UNA definicion + su llamada (antes habia 2 definiciones)'],
-    ['alElegidos',            3, 'cambio 23 · la exportacion respeta las casillas'],
-    ['class="modo"',          2, 'cambio 24 · boton de vista de computador'],
-    ['min-height:124mm',      1, 'cambio 26 · el TOTAL no se recorta al imprimir'],
-    ['opt6{',                 2, 'cambio 30 · CSS de la seccion 3'],
-    ['A.preRapido',           5, 'cambio 30 · decision de un toque'],
-    ['A.preManual',           2, 'cambio 30 · escribir otra cantidad'],
-    ['W.val.manual',          2, 'cambios 31 y 32 · arranca sin teclado'],
-    ['scrollIntoView',        2, 'cambio 30 · la consecuencia se trae a la vista'],
-    ['puedeSincronizar_',     4, 'cambio 33 · no sincronizar sin cambiar la clave'],
-    ['[!!silencioso]',        1, 'cambio 34 · el ciclo pide el estado ligero'],
-    ['r.por_hoja',            1, 'cambio 35 · detalle de la anulacion por hoja'],
-    ['function idsTxt',       1, 'los P-### de cada seccion'],
-    ['<style',                4, 'estructura'],
-    ['</style>',              4, 'estructura'],
-    ['<script',               8, 'estructura']
-  ];
+  /* =====================================================================
+     v5.5.1 · BUG_022 · ESTE VERIFICADOR DABA UNA FALSA ALARMA
+     =====================================================================
+     EL DEFECTO, y es mio: las esperanzas estaban CONGELADAS en v5.1. La
+     primera marca buscaba literalmente la cadena «VERSION_APP = 'v5.1'»,
+     asi que desde v5.2 era IMPOSIBLE que pasara. Y los conteos exactos de
+     <style, </style> y class="modo" eran la foto de un momento: al agregar
+     un bloque de estilos de Fase 2 dejaron de cuadrar.
+     CONSECUENCIA: con el Index correctamente pegado en v5.5, esta funcion
+     listaba cuatro cosas «que no cuadran» y terminaba diciendo «Vuelva a
+     pegar el index.html completo». Un verificador que pide rehacer un
+     trabajo que esta bien es peor que no tener verificador: entrena a no
+     creerle, y el dia que detecte algo de verdad nadie le va a hacer caso.
 
+     LA LECCION, y es la que aplico ahora: un conteo exacto no es un
+     invariante, es una fotografia, y las fotografias caducan. Lo que se
+     comprueba tiene que ser VERDADERO POR CONSTRUCCION:
+       · la version se LEE del archivo y se compara con la del servidor,
+         en vez de buscar un numero escrito a mano aqui
+       · las etiquetas se comprueban EQUILIBRADAS entre si, no contra un
+         numero fijo
+       · de las marcas de codigo se exige que EXISTAN, no cuantas veces
+       · el conteo exacto se reserva para los dos casos donde el numero ES
+         la propiedad: que haya UNA sola definicion de lo que debe ser
+         unico. Ahi un 2 es el defecto.
+     ===================================================================== */
+  var fallan = [], i;
   Logger.log('===== DIAGNOSTICO DEL INDEX =====');
   Logger.log('Termina en </html>: ' + (t.replace(/\s+$/, '').slice(-7) === '</html>' ? 'SI' : 'NO *** CORTADO ***'));
+  if(t.replace(/\s+$/, '').slice(-7) !== '</html>') fallan.push('el archivo esta CORTADO: no termina en </html>');
   Logger.log('');
-  Logger.log('marca                                 hallado  esperado');
-  var fallan = [], n;
-  for(var i = 0; i < marcas.length; i++){
-    n = cuenta(marcas[i][0]);
-    var pad = (marcas[i][0] + '                                        ').slice(0, 36);
-    Logger.log(pad + '  ' + ('   ' + n).slice(-5) + '    ' + ('   ' + marcas[i][1]).slice(-5) +
-               (n === marcas[i][1] ? '   ok' : '   <<< NO CUADRA'));
-    if(n !== marcas[i][1]) fallan.push(marcas[i][0] + ' (' + marcas[i][2] + '): hallado ' + n + ', esperado ' + marcas[i][1]);
+
+  /* ---- 1 · la version, leida del archivo y no escrita aqui ---- */
+  var mv = t.match(/VERSION_APP\s*=\s*'([^']+)'/);
+  var vIdx = mv ? mv[1] : null;
+  Logger.log('--- 1 · version ---');
+  Logger.log('   Index     : ' + (vIdx || '>>> NO SE ENCONTRO VERSION_APP <<<'));
+  Logger.log('   Codigo.gs : ' + VERSION_BACKEND);
+  if(!vIdx) fallan.push('el Index no declara VERSION_APP');
+  else if(vIdx !== VERSION_BACKEND)
+    fallan.push('el Index dice ' + vIdx + ' y Codigo.gs dice ' + VERSION_BACKEND +
+                ': falta pegar una de las dos mitades');
+  else Logger.log('   OK · las dos mitades dicen lo mismo');
+  Logger.log('');
+
+  /* ---- 2 · estructura EQUILIBRADA, que no caduca ---- */
+  Logger.log('--- 2 · estructura ---');
+  [['<style', '</style>'], ['<script', '</script>']].forEach(function(par){
+    var a = cuenta(par[0]), b = cuenta(par[1]);
+    Logger.log('   ' + par[0] + ' = ' + a + '   ' + par[1] + ' = ' + b + (a === b ? '   ok' : '   <<< DESCUADRADO'));
+    if(a !== b) fallan.push(par[0] + ' aparece ' + a + ' veces y ' + par[1] + ' ' + b +
+                            ': el archivo quedo cortado a mitad de un bloque');
+    if(!a) fallan.push('no hay ni un ' + par[0] + ': el pegado no trajo el cuerpo del archivo');
+  });
+  Logger.log('');
+
+  /* ---- 3 · marcas que tienen que EXISTIR (una o mas) ---- */
+  var deben = [
+    ["VERSION_F2 = 'f2.2'",   'la version de Fase 2'],
+    ['function h6SeccionDe_', 'BUG_004 · la autoridad unica de la seccion'],
+    ['function derivarPar_',  'BUG_004 · la gemela pura de la del servidor'],
+    ['function editandoAhora_', 'BUG_003 · la guarda de edicion en curso'],
+    ['toastGrave_',           'BUG_015 · los avisos graves no se borran solos'],
+    ['DB.colaDoc',            'BUG_020 · la cola de emisiones pendientes de numerar'],
+    ['provisional',           'BUG_020 · el documento sin numerar se marca'],
+    ['function alElegidos',   'la exportacion respeta las casillas'],
+    ['min-height:124mm',      'el TOTAL no se recorta al imprimir'],
+    ['function idsTxt',       'los P-### de cada seccion'],
+    ['puedeSincronizar_',     'no sincronizar sin cambiar la clave']
+  ];
+  Logger.log('--- 3 · marcas que tienen que estar ---');
+  for(i = 0; i < deben.length; i++){
+    var n3 = cuenta(deben[i][0]);
+    Logger.log('   ' + (n3 > 0 ? 'OK  ' : 'FALTA') + ' · ' + (deben[i][0] + '                              ').slice(0, 26) +
+               ' · ' + deben[i][1]);
+    if(!n3) fallan.push('falta «' + deben[i][0] + '» (' + deben[i][1] + ')');
   }
   Logger.log('');
+
+  /* ---- 4 · los unicos sitios donde el NUMERO es la propiedad ---- */
+  var unicos = [
+    ['A.alegraGenerar =', 'hubo DOS definiciones y la segunda tapaba la primera'],
+    ['vaciarCola=function', 'BUG_021 · hubo una segunda definicion que dejaba la primera muerta'],
+    ['function toast(',   'un solo canal de avisos']
+  ];
+  Logger.log('--- 4 · lo que tiene que estar UNA sola vez ---');
+  for(i = 0; i < unicos.length; i++){
+    var n4 = cuenta(unicos[i][0]);
+    Logger.log('   ' + (n4 === 1 ? 'OK  ' : 'FALLA') + ' · ' + unicos[i][0] + ' aparece ' + n4 +
+               ' vez(ces) · ' + unicos[i][1]);
+    if(n4 !== 1) fallan.push('«' + unicos[i][0] + '» aparece ' + n4 + ' veces y tiene que aparecer 1: ' + unicos[i][1]);
+  }
+  Logger.log('');
+
   if(!fallan.length){
-    Logger.log('>>> EL INDEX ESTA COMPLETO. Las 18 marcas cuadran.');
+    Logger.log('>>> EL INDEX ESTA COMPLETO Y PAREJO CON EL SERVIDOR.');
     Logger.log('>>> Si la aplicacion sigue mostrando lo de antes, el problema NO');
     Logger.log('>>> es el codigo: es la IMPLEMENTACION. Hay que EDITAR la que ya');
     Logger.log('>>> existe y ponerle «Nueva version», no crear otra.');
   }else{
-    Logger.log('>>> FALTAN COSAS. Lo que no cuadra:');
+    Logger.log('>>> ' + fallan.length + ' COSA(S) NO CUADRAN:');
     for(var j = 0; j < fallan.length; j++) Logger.log('    - ' + fallan[j]);
-    Logger.log('>>> Vuelva a pegar el index.html completo.');
   }
   return { ok:!fallan.length, fallan:fallan };
 }
