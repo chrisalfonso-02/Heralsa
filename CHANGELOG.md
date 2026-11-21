@@ -5,6 +5,67 @@ comprueba**. Un cambio sin las tres cosas no se registra aquí.
 
 ---
 
+## v5.5.1
+
+### El número de remisión sin señal, y dos defectos propios de paso
+
+**Decisión del usuario:** número provisional sin señal, y al volver la red
+«debe organizarse bien y no generar duplas o repeticiones; el sistema no debe
+colapsar».
+
+**BUG_020.** Sin señal el consecutivo se calculaba **en el dispositivo**,
+contando los pedidos que ese dispositivo tenía en memoria. Dos celulares sin
+señal imprimían el mismo `R-004`. El camino del escritorio era peor: no
+encolaba nada, así que la hoja no se enteraba nunca.
+
+Ahora la decisión documental se sigue tomando sin señal —el operador no se
+bloquea y puede entregar— pero **el número lo pone la hoja**. Mientras no hay
+red el documento es `PROVISIONAL` y el papel lo dice; no se imprime un número
+que puede cambiar. Se encola la **intención** en `DB.colaDoc`, no la fila.
+
+La convergencia tiene salida en los tres desenlaces, que es lo que evita el
+colapso:
+
+| Respuesta | Qué hace |
+|---|---|
+| `ok` | adopta el número que asignó la hoja |
+| `ya_emitido` | la respuesta anterior se perdió pero el documento sí quedó: adopta el de la hoja. **Reintentar no duplica** |
+| error permanente | **se saca de la cola** con aviso grave, para que un solo pedido mal no bloquee todas las demás escrituras |
+
+Un fallo de transporte no es ninguno de los tres: el trabajo se queda en la cola
+y se reintenta. Y las cuatro salidas del tramo reponen `colaOcupada_`: sin eso
+la cola se quedaba tomada para siempre, que era el atasco que se quería evitar.
+
+**BUG_021 · código muerto.** Había **dos** definiciones de `vaciarCola`. La
+primera estaba muerta: una reasignación de alto nivel la sobrescribe al cargar.
+Y no hacían lo mismo —la muerta sólo atendía `DB.cola`—, así que quien leyera el
+archivo de arriba abajo creería estar leyendo la lógica de la cola y estaría
+leyendo código que no se ejecuta.
+
+**BUG_022 · el verificador que daba falsa alarma.** `heralsaDiagnosticarIndex`
+tenía las expectativas **congeladas en v5.1**: buscaba literalmente la cadena
+`VERSION_APP = 'v5.1'`, así que desde v5.2 era imposible que pasara. Con el
+Index correcto en v5.5 listaba cuatro cosas «que no cuadran» y terminaba
+pidiendo volver a pegar un archivo que estaba bien. **Ese defecto es mío y lo
+arrastraba desde v5.2.**
+
+La lección, ya aplicada: un conteo exacto no es un invariante, es una
+fotografía, y las fotografías caducan. Ahora la versión se **lee** del archivo y
+se compara con la del servidor, las etiquetas se comprueban **equilibradas entre
+sí**, de las marcas de código se exige que **existan**, y el conteo exacto se
+reserva para los dos sitios donde el número *es* la propiedad: que haya **una
+sola** definición de lo que debe ser único.
+
+### Cómo se comprueba
+
+```
+heralsaVersiones()               todo parejo en v5.5.1
+heralsaVerificarDocumento()      0 fallos
+heralsaDiagnosticarIndex()       COMPLETO Y PAREJO, sin líneas en rojo
+```
+
+---
+
 ## v5.5
 
 ### El documento que se emitía bien y después se borraba solo
