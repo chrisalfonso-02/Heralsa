@@ -340,6 +340,103 @@ function apiCrearCompra_(fila1, lineas){
  * traer una linea imposible. La unica barrera que de verdad protege la hoja es
  * la que esta del lado de la hoja.
  */
+/* =====================================================================
+   v5.5 · LAS COLUMNAS DEL DOCUMENTO SON DEL SERVIDOR
+   =====================================================================
+   Estas columnas de R4_Entregas las escribe UNICAMENTE el servidor, en
+   apiDocumento_ (remision y decision de FE) y en apiAlegraEmitir /
+   apiAlegraEstado (la factura electronica real). Ninguna cola de ningun
+   dispositivo puede tocarlas: ver el comentario largo en el bucle de
+   apiGuardar_, que explica el defecto que esto cierra y por que tiene que
+   estar en el servidor y no en el navegador.
+
+   Lo que NO esta en esta lista, a proposito, porque si es del navegador:
+   te, Gasto_entrega, Completa, A_tiempo, Sin_novedad, Documento_correcto,
+   OTIF, Motivo_no_OTIF, Observaciones -- todo lo que el operador registra
+   al entregar -- y las cuatro columnas de anulacion.
+   ===================================================================== */
+var COLS_DOC_SERVIDOR_ = ['Doc_tipo', 'Doc_numero', 'Doc_fecha', 'Doc_estado', 'Doc_vendedor',
+                          'Forma_pago', 'Medio_pago', 'Plazo_dias', 'Vencimiento',
+                          'Alegra_id', 'CUFE', 'Estado_DIAN', 'Emitido_en'];
+
+/* La regla, en una funcion PURA, para que se pueda comprobar caso por caso
+   sin tocar la hoja. La comprueba heralsaVerificarDocumento(). */
+function colaPuedeEscribirDocumento_(traeDoc, yaTieneDoc){
+  return !!txt(traeDoc) && !yaTieneDoc;
+}
+
+/* COPIA EXACTA de la lista de columnas de R4 que proyecta el navegador
+   (index.html, sheetData(4)). Se tiene aqui para poder comprobar que
+   NINGUNA columna de documento que el navegador sepa escribir se quede sin
+   proteger. Es el mismo criterio que ya se usa con derivarPar_: la copia
+   existe para que una comprobacion automatica detecte la divergencia.
+   Si se cambia la lista alla, heralsaVerificarDocumento() lo dira. */
+var COLS_R4_NAVEGADOR_ = ['P_num','Cliente','Canal','tl','te','Ciclo_entrega_d','Gasto_entrega',
+  'Completa','A_tiempo','Sin_novedad','Documento_correcto','OTIF','Motivo_no_OTIF','Observaciones',
+  'Operador','Registrado_en','Doc_tipo','Doc_numero','Doc_fecha','Doc_estado','Forma_pago',
+  'Medio_pago','Plazo_dias','Vencimiento','Estado_registro','Motivo_anulacion','Anulado_por','Anulado_en'];
+
+/* =====================================================================
+   v5.5 · COMPROBACION EJECUTABLE DE LA REGLA DEL DOCUMENTO
+   =====================================================================
+   SOLO LEE. Comprueba tres cosas que no se pueden «ver» leyendo:
+     1. la tabla completa de la regla de la cola, los cuatro casos
+     2. que toda columna de documento que el navegador sabe escribir este
+        protegida (si manana alguien agrega una alla y no aqui, falla)
+     3. que el filtro de dias negativos este en los tres indicadores
+   ===================================================================== */
+function heralsaVerificarDocumento(){
+  var fallos = 0, L = function(s){ Logger.log(s); };
+  L('===== VERIFICACION DE LA REGLA DEL DOCUMENTO · solo lectura =====');
+  L('');
+
+  L('--- 1 · la regla de la cola, los cuatro casos ---');
+  var casos = [
+    { trae:'REMISION', ya:false, esperado:true,
+      caso:'la cola trae documento y la fila no tiene ninguno (emision sin señal)' },
+    { trae:'',         ya:true,  esperado:false,
+      caso:'la cola trae las columnas EN BLANCO y la fila si tiene documento  <-- el defecto de P-021' },
+    { trae:'',         ya:false, esperado:false,
+      caso:'la cola trae blanco y la fila tampoco tiene: nada que escribir' },
+    { trae:'REMISION', ya:true,  esperado:false,
+      caso:'la cola intenta CAMBIAR un documento ya emitido' }
+  ];
+  casos.forEach(function(c){
+    var r = colaPuedeEscribirDocumento_(c.trae, c.ya);
+    var ok = (r === c.esperado);
+    if(!ok) fallos++;
+    L('   ' + (ok ? 'OK  ' : 'FALLA') + ' · ' + (r ? 'se permite' : 'se bloquea') + ' · ' + c.caso);
+  });
+  L('');
+
+  L('--- 2 · ninguna columna de documento del navegador sin proteger ---');
+  var sinProteger = COLS_R4_NAVEGADOR_.filter(function(c){
+    return /^Doc_|^Forma_pago$|^Medio_pago$|^Plazo_dias$|^Vencimiento$|^Alegra_|^CUFE$|^Estado_DIAN$|^Emitido_en$/.test(c)
+           && COLS_DOC_SERVIDOR_.indexOf(c) < 0;
+  });
+  if(sinProteger.length){ fallos++; L('   FALLA · sin proteger: ' + sinProteger.join(', ')); }
+  else L('   OK   · las ' + COLS_R4_NAVEGADOR_.filter(function(c){ return COLS_DOC_SERVIDOR_.indexOf(c) >= 0; }).length +
+         ' columnas de documento que el navegador proyecta estan protegidas');
+  var noProyectadas = COLS_DOC_SERVIDOR_.filter(function(c){ return COLS_R4_NAVEGADOR_.indexOf(c) < 0; });
+  L('   (protegidas de mas, que el navegador no manda: ' + (noProyectadas.join(', ') || 'ninguna') +
+    ' · son las de Alegra y Doc_vendedor, y protegerlas no estorba)');
+  L('');
+
+  L('--- 3 · la fila de R4 tiene que existir y ser localizable por P_num ---');
+  var shv = hoja(H.entregas), idxv = indices(shv);
+  var hue = 0, ult = shv.getLastRow();
+  if(ult > 1 && idxv['P_num'] !== undefined){
+    var colP = shv.getRange(2, 1, ult - 1, Math.max(idxv['P_num'] + 1, 1)).getValues();
+    for(var i = 0; i < colP.length; i++) if(!txt(colP[i][0])) hue++;
+  }
+  if(hue){ fallos++; L('   FALLA · ' + hue + ' fila(s) de R4 con la primera columna vacia: invisibles para todo el sistema'); }
+  else L('   OK   · ninguna fila invisible en R4_Entregas');
+  L('');
+
+  L(fallos === 0 ? '===== 0 FALLOS =====' : '===== ' + fallos + ' FALLO(S) · no publique con esto en rojo =====');
+  return { ok:fallos === 0, fallos:fallos };
+}
+
 function apiGuardar_(datos){
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
@@ -352,6 +449,10 @@ function apiGuardar_(datos){
        de R3_Pedidos para responder la misma pregunta. Ahora se lee una vez,
        y solo si el lote toca alguna hoja del expediente. */
     var cabsCierre_ = null;
+    /* v5.5 · se lee UNA vez y solo si el lote trae alguna fila de R4, igual
+       criterio que cabsCierre_: ver el comentario de la regla del documento
+       mas abajo, en el bucle de escritura. */
+    var entActuales_ = null;
     (datos || []).forEach(function(d){
       if(d && (d.hoja === H.pedidos || d.hoja === H.prep || d.hoja === H.prepDet)){
         var pidCierre = txt((d.claves && d.claves[0] && d.claves[0].valor) || (d.fila || {}).P_num);
@@ -397,6 +498,83 @@ function apiGuardar_(datos){
         if(etq && !txt(d.fila.Etapa_preparacion)){
           d.fila.Etapa_preparacion = etq;
           d.atomico = true;
+        }
+      }
+      /* =================================================================
+         v5.5 · BUG_014 · LA CORRECCION DE RAIZ: UN SOLO DUEÑO POR COLUMNA
+         =================================================================
+         EL DEFECTO, probado con los datos del libro: la fila 22 de
+         R4_Entregas (P-021) tenia Doc_vendedor="Cristian" y las ocho
+         columnas del documento VACIAS. Doc_vendedor la escribe UNICAMENTE
+         apiDocumento_; el navegador solo la lee. Las otras ocho SI estan en
+         la proyeccion de R4 del navegador. Y Estado_registro decia
+         PENDIENTE, que el navegador escribe exactamente cuando su copia
+         local del documento esta vacia.
+         Es decir: el servidor emitio y escribio bien, y despues la cola del
+         navegador reescribio la fila COMPLETA desde una copia local sin
+         documento y la borro. Sobrevivio la unica columna que el navegador
+         no sabe que existe. Esa es la huella que lo prueba.
+
+         POR QUE PASA: dos escritores se reparten la misma fila sin ningun
+         acuerdo sobre quien manda en cada columna. El navegador arma la
+         fila de R4 con las 24 columnas desde su estado local, y ese estado
+         puede estar viejo: hidratar() reconstruye DB.pedidos mientras la
+         emision va en vuelo.
+
+         POR QUE SE ARREGLA AQUI Y NO EN EL NAVEGADOR: porque el navegador
+         vive en cache. Un dispositivo con la version anterior abierta
+         seguiria borrando documentos despues de actualizar el Index. El
+         servidor es el unico sitio donde esta regla se puede GARANTIZAR.
+         Arreglarlo solo en el navegador seria confiar en que todos los
+         dispositivos esten al dia, y eso no se puede confiar.
+
+         QUE SE COMPROBO ANTES DE PONERLO (el cruce de informacion):
+           · index.html:4555 A.enSave, al registrar la entrega, sube la fila
+             de R4 con estas columnas copiadas de su estado local. Con esto
+             deja de poder borrar la remision de un pedido al entregarlo:
+             era el MISMO defecto esperando en la seccion 6.
+           · index.html:11226-11227 mostrador pone p.doc=null y sube la fila
+             para «deshacer» cuando la emision falla. Ya no hace falta: si
+             apiDocumento devolvio error, el servidor no escribio nada. Y en
+             el callback de fallo (11227) la respuesta pudo perderse con el
+             documento YA emitido, y entonces ese «deshacer» borraba un
+             documento real. Tambien queda cerrado.
+           · apiAlegraEmitir y apiAlegraEstado escriben estas columnas
+             directamente con escribirFila, no por apiGuardar_: no pasan por
+             aqui y no se ven afectadas.
+         Ninguna escritura legitima del navegador necesita estas columnas.
+         ================================================================= */
+      /* -----------------------------------------------------------------
+         LA REGLA EXACTA, y es importante que sea esta y no «prohibido»:
+
+            la cola PUEDE poner un documento donde no hay ninguno
+            la cola NUNCA puede borrar ni cambiar uno que ya existe
+
+         POR QUE NO SE PROHIBE DEL TODO: porque el camino SIN CONEXION
+         necesita poder subir el documento. Si la emision ocurrio en el
+         celular sin señal, la cola es la UNICA via por la que ese documento
+         llega a la hoja (index.html, rama !ONLINE de A.facEjecutar, y
+         CFG_Config.doc_offline = REMISION, que existe justo para eso).
+         Una prohibicion total habria hecho que las remisiones emitidas sin
+         señal no se guardaran NUNCA. Lo comprobe antes de dejarlo asi: es
+         la razon por la que esta regla tiene dos mitades y no una.
+
+         Con las dos mitades, el caso destructivo es imposible -- una fila
+         que llega con las columnas en blanco no puede vaciar un documento
+         emitido -- y el caso legitimo sigue funcionando.
+         ----------------------------------------------------------------- */
+      if(d && d.hoja === H.entregas && d.fila){
+        var pidEnt_ = txt((d.claves && d.claves[0] && d.claves[0].valor) || d.fila.P_num);
+        if(entActuales_ === null) entActuales_ = indicePor_(filas(H.entregas), 'P_num');
+        var filaHoy_ = pidEnt_ ? (entActuales_[pidEnt_] || null) : null;
+        var yaTieneDoc_ = !!(filaHoy_ && txt(filaHoy_['Doc_tipo']));
+        var traeDoc_ = txt(d.fila['Doc_tipo']);
+        if(!colaPuedeEscribirDocumento_(traeDoc_, yaTieneDoc_)){
+          COLS_DOC_SERVIDOR_.forEach(function(c){ if(d.fila[c] !== undefined) delete d.fila[c]; });
+          /* si al quitarlas no queda nada que escribir, la fila entera sobra */
+          var algo_ = false, kk_;
+          for(kk_ in d.fila){ algo_ = true; break; }
+          if(!algo_) continue;
         }
       }
       var r = escribirFila(d);
@@ -541,6 +719,28 @@ function escribirFila(d){
   }
   for(var nombre in d.fila) poner(idx[nombre], d.fila[nombre]);
   if(!escrito) return { escrita:false, fila:fila };
+
+  /* =====================================================================
+     v5.5 · BUG_010 · UNA FILA NUEVA SIN SU CLAVE ES UNA FILA INVISIBLE
+     =====================================================================
+     Esta funcion escribia UNICAMENTE lo que viniera en d.fila. Las columnas
+     CLAVE -- las de `claves`, por las que se busca la fila -- no se
+     escribian nunca. Mientras el llamador repitiera la clave dentro de
+     d.fila no pasaba nada, y casi todos lo hacen. apiDocumento_ NO lo
+     hacia: su filaDoc no llevaba P_num.
+     CONSECUENCIA si buscarFila no encuentra la fila: se agrega una fila en
+     lastRow+1 con el documento escrito y SIN P_num. Y filas() descarta toda
+     fila cuya primera columna este vacia, asi que esa fila es invisible
+     para el consecutivo de remision, para docDePedido_ y para las dos
+     clasificaciones de seccion. Un documento emitido que nadie puede ver.
+     En el libro de hoy no hay ninguna fila asi -- lo comprobe con
+     heralsaDiagnosticarDocumento, que conto 0 invisibles -- pero el agujero
+     estaba abierto para cualquier llamador, presente o futuro.
+     SOLO en filas nuevas: en una fila que ya existe la clave ya coincide
+     (por eso se encontro), y reescribirla seria tocar una celda sin motivo.
+     ===================================================================== */
+  if(nueva) for(var ck = 0; ck < claves.length; ck++)
+    if(d.fila[claves[ck].columna] === undefined) poner(idx[claves[ck].columna], claves[ck].valor);
 
   if(idx['Registrado_en'] !== undefined && d.fila['Registrado_en'] === undefined
      && !d.noSello && (!d.selloSoloNueva || nueva)) poner(idx['Registrado_en'], ahora());
@@ -1762,7 +1962,7 @@ function cerrarHuecosMigracion(soloSimular){
 }
 
 /* ===================== PRUEBA Y DIAGNOSTICO ===================== */
-var VERSION_BACKEND = 'v5.4.2';
+var VERSION_BACKEND = 'v5.5';
 
 /**
  * Lee el archivo Index.html REAL del proyecto y dice si quedo bien pegado.
@@ -2389,18 +2589,53 @@ function apiGuardarConfig_(clave, valor, operador){
    pone Alegra cuando se sube el archivo, y por eso para una FE la app
    deja el numero VACIO y el estado POR_FACTURAR. */
 
+/* =====================================================================
+   v5.5 · BUG_012 · EL CANDADO ANIDADO QUE SE SOLTABA SOLO
+   =====================================================================
+   El ScriptLock de Apps Script es UNO y es GLOBAL, y NO es reentrante.
+   apiDocumento_ tomaba el candado y, ya dentro de su seccion critica,
+   llamaba a esta funcion, que volvia a pedir el MISMO candado y lo
+   LIBERABA en su propio finally. Al volver de la llamada, el resto de la
+   seccion critica de apiDocumento_ -- comprobar que no hay documento y
+   escribir la fila -- seguia corriendo SIN candado.
+   CONSECUENCIA: la pareja «comprobar duplicado» y «escribir» dejaba de ser
+   atomica, asi que dos toques seguidos podian pasar los dos por la guarda y
+   quemar dos numeros de remision. Y si Apps Script no reconcedia el
+   candado, saltaba «Lock timeout» a los 20 segundos.
+   LA SOLUCION no es un candado reentrante -- no existe aqui -- es no
+   anidarlo: el calculo vive en una funcion SIN candado, para usarla dentro
+   de una seccion critica que ya lo tiene, y la envoltura con candado queda
+   para quien llame desde fuera.
+
+   v5.5 · BUG_011 · Y SE CUENTA SOBRE LA HOJA CRUDA, NO SOBRE filas()
+   =====================================================================
+   El numero de remision no se guarda en ningun contador: se DEDUCE del
+   maximo Doc_numero que haya en R4. Si se cuenta con filas(), que descarta
+   las filas con la primera columna vacia, un numero ya entregado puede
+   quedar escondido y el sistema lo repartiria OTRA VEZ a un pedido
+   distinto. Dos remisiones con el mismo numero no se arreglan borrando:
+   hay que anular. Asi que se lee la columna completa, incluidas las filas
+   anuladas y cualquier fila sin clave: un numero usado NUNCA se reutiliza.
+   ===================================================================== */
+function nuevaRemisionSinLock_(){
+  var pref = apiConfig_().prefijo_remision || 'R';
+  var sh = hoja(H.entregas), idx = indices(sh), ultima = sh.getLastRow();
+  var usados = 0;
+  if(idx['Doc_numero'] !== undefined && ultima > 1){
+    var col = sh.getRange(2, idx['Doc_numero'] + 1, ultima - 1, 1).getValues();
+    var re = new RegExp('^' + pref + '-(\\d+)$');
+    for(var i = 0; i < col.length; i++){
+      var m = String(txt(col[i][0])).match(re);
+      if(m) usados = Math.max(usados, parseInt(m[1], 10));
+    }
+  }
+  return pref + '-' + ceros2(usados + 1, 3);
+}
 function apiNuevaRemision_(){
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
-  try{
-    var pref = apiConfig_().prefijo_remision || 'R';
-    var usados = 0;
-    filas(H.entregas).forEach(function(r){
-      var m = String(txt(r['Doc_numero'])).match(new RegExp('^' + pref + '-(\\d+)$'));
-      if(m) usados = Math.max(usados, parseInt(m[1], 10));
-    });
-    return pref + '-' + ceros2(usados + 1, 3);
-  } finally { lock.releaseLock(); }
+  try{ return nuevaRemisionSinLock_(); }
+  finally { lock.releaseLock(); }
 }
 
 /**
@@ -2457,14 +2692,36 @@ function apiDocumento_(pid, tipo, operador, pago){
 
     var ya = buscarEn(filas(H.entregas), 'P_num', txt(pid));
     var cabDoc = buscarEn(filas(H.pedidos), 'P_num', txt(pid));
-    if(!ya || !cabDoc || (txt(cabDoc.Estado).toUpperCase() !== 'LISTO' && txt(cabDoc.Estado).toUpperCase() !== 'ENTREGADO'))
-      return { ok:false, error:'El pedido ' + pid + ' todavía no está LISTO. Primero termina Finalizar.' };
+    /* =================================================================
+       v5.5 · BUG_016 · UN MENSAJE POR CAUSA
+       =================================================================
+       Las tres condiciones de abajo estaban en un solo `if` con un solo
+       mensaje: «todavia no esta LISTO. Primero termina Finalizar». Si la
+       causa real era que faltaba la fila de R4, el operador iba a
+       Finalizar, lo encontraba cerrado y no tenia nada que hacer: el
+       mensaje lo mandaba a un sitio donde no estaba el problema. Un error
+       que no dice que pasa no es un error, es un estorbo.
+       ================================================================= */
+    if(!cabDoc)
+      return { ok:false, error:'El pedido ' + pid + ' no existe en R3_Pedidos. No se puede emitir un ' +
+               'documento de un pedido que no esta registrado.' };
+    if(!ya)
+      return { ok:false, error:'El pedido ' + pid + ' no tiene fila en R4_Entregas, y ahi es donde vive el ' +
+               'documento. Esa fila se crea con el pedido: si falta, ejecute heralsaRevisarLogica() y avise. ' +
+               'No es algo que se arregle desde Finalizar.' };
+    var estCab_ = txt(cabDoc.Estado).toUpperCase();
+    if(estCab_ !== 'LISTO' && estCab_ !== 'ENTREGADO')
+      return { ok:false, error:'El pedido ' + pid + ' esta en "' + (txt(cabDoc.Estado) || '(vacio)') +
+               '" y para emitir tiene que estar LISTO. Termine el cierre en 4 Finalizar.' };
     if(txt(ya['Doc_tipo']) || txt(ya['Doc_numero']))
       return { ok:false, error:'El pedido ' + pid + ' ya tiene una decisión documental ' +
                                (txt(ya['Doc_tipo']) || txt(ya['Doc_numero'])) + '. Un pedido es una entrega y un ' +
                                'documento: no se puede emitir dos veces.' };
 
-    var num = tipo === 'REMISION' ? apiNuevaRemision_() : '';
+    /* v5.5 · BUG_012 · sin candado: ya estamos DENTRO del candado (linea de
+       waitLock arriba). La version con candado es apiNuevaRemision_, para
+       quien la llame desde fuera de una seccion critica. */
+    var num = tipo === 'REMISION' ? nuevaRemisionSinLock_() : '';
     var estado = tipo === 'REMISION' ? 'EMITIDO' : 'POR_FACTURAR';
     var vence = esCredito ? (txt(pago.vence) || masDias(txt(ya['te']) || fechaHoy(),plazo)) : '';
     /* =================================================================
@@ -2479,16 +2736,52 @@ function apiDocumento_(pid, tipo, operador, pago){
        queda vacio y el documento imprime el operador. Nunca se inventa.
        ================================================================= */
     var vendedorDoc = txt(pago.vendedor);
-    var filaDoc = { Doc_tipo:tipo, Doc_numero:num, Doc_fecha:fechaHoy(), Doc_estado:estado,
+    var filaDoc = { P_num:txt(pid),
+             Doc_tipo:tipo, Doc_numero:num, Doc_fecha:fechaHoy(), Doc_estado:estado,
              Forma_pago:forma, Medio_pago:medio,
              Plazo_dias: esCredito ? plazo : '',
-             Vencimiento:vence };
+             Vencimiento:vence,
+             /* v5.5 · una fila de R4 con documento emitido es un registro de
+                verdad, no el hueco que se crea con el pedido. El navegador ya
+                aplicaba este mismo criterio en su proyeccion; el servidor no,
+                y por eso la fila se quedaba en PENDIENTE. */
+             Estado_registro:E_VIG };
     if(vendedorDoc && ixE['Doc_vendedor'] !== undefined) filaDoc.Doc_vendedor = vendedorDoc;
     var r = escribirFila({ hoja:H.entregas, noSello:true,
       claves:[{ columna:'P_num', valor:pid }],
       fila:filaDoc });
     if(r.bloqueada)
       return { ok:false, error:'El pedido ' + pid + ' esta anulado: no se le puede emitir documento.' };
+
+    /* =================================================================
+       v5.5 · BUG_009 · EL EXITO SE DEMUESTRA, NO SE SUPONE
+       =================================================================
+       Esta funcion devolvia ok:true con el numero de remision mirando
+       UNICAMENTE r.bloqueada. escribirFila tambien puede devolver
+       {escrita:false} sin bloqueada, y nadie lo comprobaba: el servidor
+       confirmaba al operador un documento que podia no haber quedado en
+       ninguna parte. Eso es exactamente lo que vio el usuario con P-021:
+       la pantalla decia «Remision R-004» y la hoja estaba vacia.
+       Ahora se vuelve a LEER la fila y se compara con lo que se quiso
+       escribir. Si no coincide, se dice que NO se emitio, con la fila
+       fisica para poder ir a verla. Releer cuesta una lectura de hoja; un
+       documento fantasma cuesta una anulacion.
+       flush() es obligatorio: sin el, la lectura puede responder con el
+       estado anterior a la escritura y la comprobacion no valdria nada.
+       ================================================================= */
+    SpreadsheetApp.flush();
+    var compro = buscarEn(filas(H.entregas), 'P_num', txt(pid));
+    var okTipo = compro && txt(compro['Doc_tipo']).toUpperCase() === tipo;
+    var okNum  = tipo !== 'REMISION' || (compro && txt(compro['Doc_numero']) === num);
+    if(!okTipo || !okNum)
+      return { ok:false, no_escrito:true,
+               error:'NO SE EMITIO. La hoja acepto la orden pero la fila de ' + pid +
+                 ' en R4_Entregas no quedo con el documento' +
+                 (r.fila ? ' (fila ' + r.fila + ')' : '') + '. ' +
+                 'Lo que quedo escrito: Doc_tipo="' + (compro ? txt(compro['Doc_tipo']) : '(no se encontro la fila)') +
+                 '", Doc_numero="' + (compro ? txt(compro['Doc_numero']) : '') + '". ' +
+                 'El numero ' + (num || '(sin numero)') + ' NO se considera usado. ' +
+                 'Ejecute heralsaDiagnosticarDocumento() y avise.' };
 
     apiLogCambio_([{ Tabla:'R4_Entregas', Registro:pid, Campo:'Doc_tipo',
                     Valor_antes:(ya ? txt(ya['Doc_tipo']) : ''), Valor_despues:tipo,
@@ -3804,7 +4097,7 @@ function apiAnalisisFinanciero(token){
 /** Ejecutar esta. Dice si los tres archivos quedaron bien pegados. */
 function heralsaVersion(){
   Logger.log('=========== VERSIONES ===========');
-  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.4.2');
+  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.5');
   Logger.log('Fase 2    : ' + VERSION_FASE2 + '      <- debe decir f2.2');
   var vIndex = null, largo = 0, cierra = false;
   try{
@@ -3812,7 +4105,7 @@ function heralsaVersion(){
     largo  = t.length;
     vIndex = (t.match(/VERSION_APP\s*=\s*'([^']+)'/) || [])[1] || null;
     cierra = t.replace(/\s+$/, '').slice(-7) === '</html>';
-    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.4.2');
+    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.5');
     Logger.log('Termina en </html>: ' + (cierra ? 'SI' : 'NO  *** QUEDO CORTADO AL PEGAR ***'));
     /* El tamano que devuelve getContent() NO coincide con el del archivo
        fuente: HtmlService no entrega el texto literal. Comparar tamanos aqui
@@ -3827,7 +4120,7 @@ function heralsaVersion(){
   }
   Logger.log('---------------------------------');
   if(vIndex === VERSION_BACKEND && cierra)
-    Logger.log('>>> TODO PAREJO EN v5.4.2. El codigo esta bien pegado.');
+    Logger.log('>>> TODO PAREJO EN v5.5. El codigo esta bien pegado.');
   else if(vIndex && vIndex !== VERSION_BACKEND)
     Logger.log('>>> NO COINCIDEN. Vuelva a pegar el archivo que se quedo atras.');
   else
@@ -4995,7 +5288,20 @@ function heralsaRecalcularIndicadores(){
   function di(n,v,u,base){ Logger.log(' ' + n + ': ' + (v===null?'sin datos':(Math.round(v*100)/100)+(u||'')) +
     (base!==undefined?'   (n=' + base + ')':'')); }
 
-  /* 1 abastecimiento */ var l1=[]; det.forEach(function(r){var d=dias(r.tn,r.tr); if(d!==null)l1.push(d);});
+  /* =====================================================================
+     v5.5 · BUG_019 · LA MISMA GUARDA EN LOS TRES SITIOS
+     =====================================================================
+     El indicador 4 descartaba los tiempos negativos con h>=0. Los
+     indicadores 1 y 8 solo comprobaban !==null, asi que ACEPTABAN dias
+     negativos. Hoy P-012 tiene te anterior a tl y por eso metia un valor
+     negativo en el promedio del indicador 8 y lo bajaba.
+     Un promedio con un dato imposible no es un promedio: es un numero que
+     parece bueno y esta mal. El dato negativo no se corrige aqui -- eso es
+     una decision de negocio sobre que fecha esta equivocada -- pero no
+     puede entrar en el promedio, y el n lo dice: si el pedido sale del
+     denominador, el indicador avisa que lo midio sobre menos casos.
+     ===================================================================== */
+  /* 1 abastecimiento */ var l1=[]; det.forEach(function(r){var d=dias(r.tn,r.tr); if(d!==null&&d>=0)l1.push(d);});
   di('1 Abastecimiento        ', prom(l1), ' d', l1.length);
   /* 2 cumplimiento proveedor */ var ok2=det.filter(function(r){return txt(r.Estado_recepcion).toUpperCase()==='COMPLETA';}).length;
   di('2 Cumpl. proveedor      ', pct(ok2,det.length), ' %', det.length);
@@ -5013,7 +5319,10 @@ function heralsaRecalcularIndicadores(){
   /* 7 a tiempo */ var ev7=ped.filter(function(p){return txt(p.Listo_a_tiempo);}),
       s7=ev7.filter(function(p){return txt(p.Listo_a_tiempo).toUpperCase()==='S';}).length;
   di('7 Preparacion a tiempo  ', pct(s7,ev7.length), ' %', ev7.length);
-  /* 8 entrega */ var l8=[]; ent.forEach(function(r){var d=dias(r.tl,r.te); if(d!==null)l8.push(d);});
+  /* 8 entrega · v5.5 · BUG_019 · misma guarda que el 1 y el 4 */
+  var l8=[], neg8=0; ent.forEach(function(r){var d=dias(r.tl,r.te); if(d===null)return; if(d<0){neg8++;return;} l8.push(d);});
+  if(neg8) Logger.log(' >>> AVISO: ' + neg8 + ' entrega(s) con te ANTERIOR a tl quedaron fuera del indicador 8. ' +
+    'Ejecute heralsaRevisarCoherencia para ver cuales: hay que corregir la fecha.');
   di('8 Entrega               ', prom(l8), ' d', l8.length);
   /* 9 costo de entrega */ var e9=ent.filter(function(r){return txt(r.te);}), g9=0;
   e9.forEach(function(r){ g9 += numero(r.Gasto_entrega)||0; });
