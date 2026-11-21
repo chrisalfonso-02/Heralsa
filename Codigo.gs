@@ -1762,7 +1762,7 @@ function cerrarHuecosMigracion(soloSimular){
 }
 
 /* ===================== PRUEBA Y DIAGNOSTICO ===================== */
-var VERSION_BACKEND = 'v5.4';
+var VERSION_BACKEND = 'v5.4.1';
 
 /**
  * Lee el archivo Index.html REAL del proyecto y dice si quedo bien pegado.
@@ -3804,7 +3804,7 @@ function apiAnalisisFinanciero(token){
 /** Ejecutar esta. Dice si los tres archivos quedaron bien pegados. */
 function heralsaVersion(){
   Logger.log('=========== VERSIONES ===========');
-  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.4');
+  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.4.1');
   Logger.log('Fase 2    : ' + VERSION_FASE2 + '      <- debe decir f2.2');
   var vIndex = null, largo = 0, cierra = false;
   try{
@@ -3812,7 +3812,7 @@ function heralsaVersion(){
     largo  = t.length;
     vIndex = (t.match(/VERSION_APP\s*=\s*'([^']+)'/) || [])[1] || null;
     cierra = t.replace(/\s+$/, '').slice(-7) === '</html>';
-    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.4');
+    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.4.1');
     Logger.log('Termina en </html>: ' + (cierra ? 'SI' : 'NO  *** QUEDO CORTADO AL PEGAR ***'));
     /* El tamano que devuelve getContent() NO coincide con el del archivo
        fuente: HtmlService no entrega el texto literal. Comparar tamanos aqui
@@ -3827,7 +3827,7 @@ function heralsaVersion(){
   }
   Logger.log('---------------------------------');
   if(vIndex === VERSION_BACKEND && cierra)
-    Logger.log('>>> TODO PAREJO EN v5.4. El codigo esta bien pegado.');
+    Logger.log('>>> TODO PAREJO EN v5.4.1. El codigo esta bien pegado.');
   else if(vIndex && vIndex !== VERSION_BACKEND)
     Logger.log('>>> NO COINCIDEN. Vuelva a pegar el archivo que se quedo atras.');
   else
@@ -5878,24 +5878,16 @@ function heralsaCrearColumnasV53(){
    SOLO LEE. No escribe, no corrige, no borra.
    ===================================================================== */
 
-/** La MISMA asignacion de seccion que usa la app, para poder compararla. */
-function logSeccionDe_(p, tieneDoc){
-  if(!p) return 0;
-  if(txt(p[COL_EST]).toUpperCase() === E_ANU) return 0;
-  var est = txt(p.Estado).toUpperCase();
-  var eta = txt(p.Etapa_preparacion).toUpperCase();
-  if(est === 'ENTREGADO') return 7;
-  if(est === 'LISTO')     return tieneDoc ? 6 : 5;
-  if(tieneDoc)            return 6;
-  if(eta === 'FINALIZAR') return 4;
-  if(eta === 'DESPACHAR') return 3;
-  if(eta === 'LISTO')     return 4;
-  return 2;
-}
+/* v5.4.1 · AQUI HABIA UNA TERCERA COPIA DE LA CASCADA (logSeccionDe_), que
+   heralsaRevisarLogica usaba para «poder compararla». Una copia para
+   comparar es una copia que se desactualiza: se retira y la revision usa
+   seccionDePedido_, la autoridad unica. Quien compara las dos
+   implementaciones que de verdad existen -- la del servidor y la del
+   navegador -- es heralsaVerificarSeccion(), con los datos reales. */
 
 function heralsaRevisarLogica(){
   var ini = new Date().getTime();
-  Logger.log('===== v5.3 · REVISION DE LOGICA · solo lectura =====');
+  Logger.log('===== ' + VERSION_BACKEND + ' · REVISION DE LOGICA · solo lectura =====');
   var fallos = 0, avisos = 0;
   function F(t){ fallos++; Logger.log('FALLO  ' + t); }
   function A(t){ avisos++; Logger.log('aviso  ' + t); }
@@ -5933,11 +5925,15 @@ function heralsaRevisarLogica(){
   Logger.log('');
   Logger.log('--- 1 · LAS CINCO SECCIONES + COMPLETADOS + INHABILITADOS ---');
   var porSeccion = { 0:0, 2:0, 3:0, 4:0, 5:0, 6:0, 7:0 }, perdidos = [];
+  /* v5.4.1 · se clasifica con la autoridad unica y con las hojas ya leidas,
+     no con una copia local de la cascada. logSeccionDe_ queda retirada. */
+  var prepPorPed_ = agrupaPor_(prep, 'P_num');
+  var detPorPed_  = agrupaPor_(det, 'P_num');
   var todosPed = peds.filter(function(p){ return txt(p.P_num); });
   todosPed.forEach(function(p){
-    var e = entPorNum[txt(p.P_num)] || {};
-    var n = logSeccionDe_(p, !!txt(e.Doc_tipo));
-    if(porSeccion[n] === undefined){ perdidos.push(txt(p.P_num) + ' (seccion ' + n + ')'); return; }
+    var pid_ = txt(p.P_num);
+    var n = seccionDePedido_(p, entPorNum[pid_] || {}, prepPorPed_[pid_] || [], detPorPed_[pid_] || []);
+    if(porSeccion[n] === undefined){ perdidos.push(pid_ + ' (seccion ' + n + ')'); return; }
     porSeccion[n]++;
   });
   var enSecciones = porSeccion[2] + porSeccion[3] + porSeccion[4] + porSeccion[5] + porSeccion[6];
@@ -5963,8 +5959,8 @@ function heralsaRevisarLogica(){
      lo que muestra la pantalla sin tener que creerle a nadie */
   [2,3,4,5,6].forEach(function(n){
     var l = todosPed.filter(function(p){
-      var e = entPorNum[txt(p.P_num)] || {};
-      return logSeccionDe_(p, !!txt(e.Doc_tipo)) === n;
+      var pid_ = txt(p.P_num);
+      return seccionDePedido_(p, entPorNum[pid_] || {}, prepPorPed_[pid_] || [], detPorPed_[pid_] || []) === n;
     }).map(function(p){ return txt(p.P_num); });
     if(l.length) Logger.log('       seccion ' + n + ' -> ' + l.join(' · '));
   });
@@ -6178,10 +6174,12 @@ function heralsaRevisarLogica(){
     var est = txt(cab.Estado).toUpperCase(), eta = txt(cab.Etapa_preparacion).toUpperCase();
     var cerrado = (est === 'LISTO' || est === 'ENTREGADO');
     var conocida = ['ORGANIZAR','DESPACHAR','FINALIZAR','LISTO'].indexOf(eta) >= 0;
+    var teCab = txt((entPorNum[pid] || {}).te);
     var cual = (eta === 'LISTO' && !cerrado) ? 'C1 etapa cerrada con estado abierto'
              : (cerrado && eta !== 'LISTO')  ? 'C2 estado cerrado con etapa abierta'
              : !conocida                     ? 'C3 etapa vacia o desconocida'
              : (eta === 'FINALIZAR' && !txt(cab.tc)) ? 'C4 etapa FINALIZAR sin inicio de despacho'
+             : (teCab && est !== 'ENTREGADO') ? 'C5 tiene entrega y el estado no dice ENTREGADO'
              : '';
     if(cual) contra.push(pid + ' · ' + est + ' / ' + (eta || '(vacia)') + ' · ' + cual);
   });
@@ -6397,14 +6395,42 @@ function nombreSeccion_(n){ return SECCIONES_[n] || ('seccion ' + n); }
    dejan de coincidir, heralsaRevisarLogica() lo detecta, porque las dos
    cuentan sobre los mismos datos y la suma tiene que dar el total.
    ===================================================================== */
-function seccionDePedido_(cab, tieneDoc){
+/* =====================================================================
+   v5.4.1 · EL CLASIFICADOR NO LEE COLUMNAS: CLASIFICA SOBRE LOS HECHOS
+   =====================================================================
+   ANTES leia Estado y Etapa_preparacion tal como estaban en la hoja. El
+   frontend, en cambio, DEDUCE el estado de los hechos y lo dice en su
+   propio comentario: «el estado NO se lee de la hoja: se DEDUCE de los
+   hechos». Resultado medido con los datos reales del usuario: para P-007
+   -- que tiene fecha de entrega y la columna Estado en LISTO -- el servidor
+   decia seccion 6 y la pantalla decia Completados. Dos autoridades.
+
+   AHORA las dos derivan primero el par (Estado, Etapa) con la MISMA
+   especificacion y clasifican sobre el resultado. La columna de la hoja
+   deja de poder mentirle al clasificador: si dice una cosa y los hechos
+   dicen otra, manda el hecho, y normalizarCabecera_ corrige la columna.
+
+   Los parametros partes y det son opcionales: sin ellos la derivacion usa
+   lo que tenga (Fecha_real_listo de R3 y el documento), que es suficiente
+   para los tres estados cerrados. Pasarlos es mejor y es lo que hacen los
+   recorridos en lote, que ya tienen las hojas leidas.
+   ===================================================================== */
+function seccionDePedido_(cab, entOdoc, partes, det){
   if(!cab) return 0;
   if(txt(cab[COL_EST]).toUpperCase() === E_ANU) return 0;
-  var est = txt(cab.Estado).toUpperCase();
-  var eta = txt(cab.Etapa_preparacion).toUpperCase();
+
+  /* compatibilidad: algunas llamadas pasan un booleano «tieneDoc» en vez de
+     la fila de R4. Las dos formas se admiten para no romper nada. */
+  var ent = (entOdoc && typeof entOdoc === 'object') ? entOdoc
+          : (entOdoc === true ? { Doc_tipo:'REMISION' } : {});
+  var doc = !!txt(ent.Doc_tipo);
+
+  var c = cabeceraCoherente_(cab, partes || [], det || [], ent);
+  var est = c.estado, eta = c.etapa;
+
   if(est === 'ENTREGADO') return 7;
-  if(est === 'LISTO')     return tieneDoc ? 6 : 5;
-  if(tieneDoc)            return 6;
+  if(est === 'LISTO')     return doc ? 6 : 5;
+  if(doc)                 return 6;
   if(eta === 'FINALIZAR') return 4;
   if(eta === 'DESPACHAR') return 3;
   if(eta === 'LISTO')     return 4;
@@ -6461,26 +6487,39 @@ function cabeceraCoherente_(cab, partes, det, ent){
   var vivas = (det || []).filter(function(r){ return txt(r[COL_EST]).toUpperCase() !== E_ANU; });
   var hayLineas = vivas.length > 0;
 
-  var E, T, por;
-  if(te){                 E = 'ENTREGADO';      T = 'LISTO';      por = 'tiene fecha de entrega (te)'; }
-  else if(tl){            E = 'LISTO';          T = 'LISTO';      por = 'tiene fecha de cierre (tl)'; }
-  else if(doc){           E = 'LISTO';          T = 'LISTO';      por = 'ya tiene documento emitido'; }
-  else if(!hayLineas){    E = 'NUEVO';          T = 'ORGANIZAR';  por = 'no tiene lineas que preparar'; }
-  else if(!tc){
-    /* con lineas y sin iniciar el despacho, las dos etapas son legitimas:
-       ORGANIZAR (cargando) y DESPACHAR (enviado, sin iniciar). Se respeta
-       la guardada; cualquier otra cosa cae en ORGANIZAR. */
-    T = (etapa === 'DESPACHAR') ? 'DESPACHAR' : 'ORGANIZAR';
-    E = (T === 'ORGANIZAR') ? 'NUEVO' : 'EN_PREPARACION';
-    por = 'tiene lineas y no ha iniciado el despacho (no hay tc)';
-  }else{
-    /* iniciado y sin cerrar: DESPACHAR o FINALIZAR, se respeta la guardada */
-    T = (etapa === 'FINALIZAR') ? 'FINALIZAR' : 'DESPACHAR';
-    E = 'EN_PREPARACION';
-    por = 'el despacho esta iniciado (tc) y no se ha cerrado';
+  var d = derivarPar_(te, tl, doc, hayLineas, tc, etapa);
+  return { estado:d.estado, etapa:d.etapa, porque:d.porque,
+           coincide:(estado === d.estado && etapa === d.etapa) };
+}
+
+/* =====================================================================
+   derivarPar_ · LA ESPECIFICACION, EN UNA FUNCION PURA
+   =====================================================================
+   Entra solo lo que son HECHOS (si existen o no) y la etapa guardada. Sale
+   el par que le corresponde. Sin leer hojas, sin efectos: por eso se puede
+   comprobar caso por caso contra la copia del Index, y por eso existe
+   heralsaVerificarSeccion().
+
+   LA MISMA FUNCION, CON EL MISMO NOMBRE, ESTA EN Index.html. Si se cambia
+   una hay que cambiar la otra, y la comprobacion lo detecta.
+   ===================================================================== */
+function derivarPar_(hayEntrega, hayTl, hayDoc, hayLineas, hayTc, etapaGuardada){
+  var eta = String(etapaGuardada || '').toUpperCase();
+  if(hayEntrega) return { estado:'ENTREGADO', etapa:'LISTO', porque:'tiene fecha de entrega (te)' };
+  if(hayTl)      return { estado:'LISTO',     etapa:'LISTO', porque:'tiene fecha de cierre (tl)' };
+  if(hayDoc)     return { estado:'LISTO',     etapa:'LISTO', porque:'ya tiene documento emitido' };
+  if(!hayLineas) return { estado:'NUEVO',     etapa:'ORGANIZAR', porque:'no tiene lineas que preparar' };
+  if(!hayTc){
+    /* con lineas y sin iniciar el despacho las dos etapas son legitimas:
+       ORGANIZAR (cargando) y DESPACHAR (enviado, sin iniciar). Se respeta la
+       guardada; cualquier otra cosa cae en ORGANIZAR. */
+    var t1 = (eta === 'DESPACHAR') ? 'DESPACHAR' : 'ORGANIZAR';
+    return { estado:(t1 === 'ORGANIZAR') ? 'NUEVO' : 'EN_PREPARACION', etapa:t1,
+             porque:'tiene lineas y no ha iniciado el despacho (no hay tc)' };
   }
-  return { estado:E, etapa:T, porque:por,
-           coincide:(estado === E && etapa === T) };
+  /* iniciado y sin cerrar: DESPACHAR o FINALIZAR, se respeta la guardada */
+  return { estado:'EN_PREPARACION', etapa:(eta === 'FINALIZAR') ? 'FINALIZAR' : 'DESPACHAR',
+           porque:'el despacho esta iniciado (tc) y no se ha cerrado' };
 }
 
 /* =====================================================================
@@ -6509,22 +6548,36 @@ function normalizarCabecera_(pid, cab, operador, motivo){
   var cerrado = (estado === 'LISTO' || estado === 'ENTREGADO');
   var etapaConocida = ['ORGANIZAR','DESPACHAR','FINALIZAR','LISTO'].indexOf(etapa) >= 0;
 
+  /* =====================================================================
+     v5.4.1 · C5 · LA CONTRADICCION QUE SE ME ESCAPO
+     =====================================================================
+     P-007 tiene fecha de entrega (te) y la columna Estado dice LISTO. Las
+     cuatro contradicciones anteriores solo miraban el par Estado/Etapa
+     entre si, asi que esta no la veian: el par era coherente consigo mismo
+     y mentia respecto a los HECHOS. Era justo la que hacia que el servidor
+     y la pantalla clasificaran P-007 en sitios distintos.
+     cohPedido_ ya lo reportaba como aviso («tiene fecha de entrega pero su
+     estado es LISTO»); lo que faltaba era corregirlo, no solo avisarlo.
+     ===================================================================== */
+  var partes = filas(H.prep).filter(function(r){ return txt(r.P_num) === pid; });
+  var det    = filas(H.prepDet).filter(function(r){ return txt(r.P_num) === pid; });
+  var ent    = buscarEn(filas(H.entregas), 'P_num', pid) || {};
+
   var C1 = (etapa === 'LISTO' && !cerrado);
   var C2 = (cerrado && etapa !== 'LISTO');
   var C3 = !etapaConocida;
   var C4 = (etapa === 'FINALIZAR' && !txt(cab.tc));
-  if(!C1 && !C2 && !C3 && !C4) return { cambio:false, cab:cab };
+  var C5 = (!!txt(ent.te) && estado !== 'ENTREGADO');
+  if(!C1 && !C2 && !C3 && !C4 && !C5) return { cambio:false, cab:cab };
 
-  var partes = filas(H.prep).filter(function(r){ return txt(r.P_num) === pid; });
-  var det    = filas(H.prepDet).filter(function(r){ return txt(r.P_num) === pid; });
-  var ent    = buscarEn(filas(H.entregas), 'P_num', pid) || {};
   var c = cabeceraCoherente_(cab, partes, det, ent);
   if(c.coincide) return { cambio:false, cab:cab };
 
   var cual = C1 ? 'C1 etapa cerrada con estado abierto'
            : C2 ? 'C2 estado cerrado con etapa abierta'
            : C3 ? 'C3 etapa vacia o desconocida'
-                : 'C4 etapa FINALIZAR sin inicio de despacho';
+           : C4 ? 'C4 etapa FINALIZAR sin inicio de despacho'
+                : 'C5 tiene fecha de entrega y el estado no dice ENTREGADO';
 
   var logs = [], f = { P_num:pid };
   if(estado !== c.estado){
@@ -6593,7 +6646,8 @@ function repararEtapas_(soloSimular){
     var cerrado = (estado === 'LISTO' || estado === 'ENTREGADO');
     var conocida = ['ORGANIZAR','DESPACHAR','FINALIZAR','LISTO'].indexOf(etapa) >= 0;
     var hay = (etapa === 'LISTO' && !cerrado) || (cerrado && etapa !== 'LISTO')
-           || !conocida || (etapa === 'FINALIZAR' && !txt(cab.tc));
+           || !conocida || (etapa === 'FINALIZAR' && !txt(cab.tc))
+           || (!!txt((ents[pid]||{}).te) && estado !== 'ENTREGADO');   /* v5.4.1 · C5 */
     if(!hay){ ok++; return; }
     var c = cabeceraCoherente_(cab, partes[pid] || [], dets[pid] || [], ents[pid] || {});
     if(c.coincide){ ok++; return; }
@@ -6743,4 +6797,249 @@ function heralsaVerificarCanal(){
                     : '>>> Las dos copias de la regla del canal coinciden en los ' + casos.length + ' casos.');
   Logger.log('No se escribio nada.');
   return { ok:fallos === 0, fallos:fallos, casos:casos.length };
+}
+
+
+/* ####################################################################
+   v5.4.1 · LA COMPROBACION QUE FALTABA
+   ####################################################################
+   Ejecuta las DOS implementaciones de la regla -- la del servidor y la que
+   de verdad se sirve en el Index -- con todas las combinaciones posibles, y
+   despues con los datos reales del libro. Si dejan de coincidir, lo dice
+   con el caso exacto y con el numero de pedido.
+
+   Esto es lo que convierte «las escribi iguales» en «estan iguales».
+   #################################################################### */
+function heralsaVerificarSeccion(){
+  Logger.log('===== ' + VERSION_BACKEND + ' · SERVIDOR CONTRA NAVEGADOR · solo lectura =====');
+  var fallos = 0;
+
+  /* ---- se extraen del Index las dos funciones puras ---- */
+  var fnDer = null, fnSec = null;
+  try{
+    var html = HtmlService.createHtmlOutputFromFile('Index').getContent();
+    var mD = html.match(/function derivarPar_\(hayEntrega[\s\S]*?\n\}/);
+    var mS = html.match(/function h6SeccionDe_\(p\)\{[\s\S]*?\n\}/);
+    if(!mD){ Logger.log('FALLO  no se encontro derivarPar_ en el Index.'); fallos++; }
+    else fnDer = eval('(' + mD[0].replace('function derivarPar_', 'function') + ')');
+    if(!mS){ Logger.log('FALLO  no se encontro h6SeccionDe_ en el Index.'); fallos++; }
+    else{
+      /* h6SeccionDe_ usa anulado(p); se le da una version equivalente */
+      var anulado = function(p){ return !!(p && p.anulado); };
+      fnSec = eval('(' + mS[0].replace('function h6SeccionDe_', 'function') + ')');
+    }
+  }catch(e){ Logger.log('FALLO  no se pudo leer el Index: ' + e.message); fallos++; }
+
+  /* ---- 1 · la derivacion, con TODAS las combinaciones ---- */
+  Logger.log('');
+  Logger.log('--- 1 · derivarPar_ · las 192 combinaciones posibles ---');
+  var etapas = ['', 'ORGANIZAR', 'DESPACHAR', 'FINALIZAR', 'LISTO', 'BASURA'];
+  var n = 0, difD = [];
+  if(fnDer){
+    [false,true].forEach(function(te){ [false,true].forEach(function(tl){
+    [false,true].forEach(function(doc){ [false,true].forEach(function(lin){
+    [false,true].forEach(function(tc){ etapas.forEach(function(eta){
+      n++;
+      var a = derivarPar_(te, tl, doc, lin, tc, eta);
+      var b = fnDer(te, tl, doc, lin, tc, eta);
+      if(a.estado !== b.estado || a.etapa !== b.etapa)
+        difD.push('te=' + te + ' tl=' + tl + ' doc=' + doc + ' lin=' + lin + ' tc=' + tc +
+                  ' etapa=«' + eta + '» · servidor ' + a.estado + '/' + a.etapa +
+                  ' · navegador ' + b.estado + '/' + b.etapa);
+    }); }); }); }); }); });
+    if(difD.length){
+      fallos += difD.length;
+      Logger.log('FALLO  ' + difD.length + ' de ' + n + ' combinaciones NO coinciden:');
+      difD.slice(0,8).forEach(function(t){ Logger.log('       ' + t); });
+    }else Logger.log('OK     las ' + n + ' combinaciones dan el mismo par en los dos lados');
+  }
+
+  /* ---- 2 · la cascada de secciones, sobre el par derivado ---- */
+  Logger.log('');
+  Logger.log('--- 2 · la cascada de secciones · 7 estados x 6 etapas x documento ---');
+  var difS = [], m = 0;
+  if(fnSec){
+    ['','NUEVO','EN_PREPARACION','LISTO','ENTREGADO','INCOMPLETO','BASURA'].forEach(function(est){
+      etapas.forEach(function(eta){ [false,true].forEach(function(doc){ [false,true].forEach(function(anu){
+        m++;
+        var cab = {}; cab.Estado = est; cab.Etapa_preparacion = eta; cab[COL_EST] = anu ? E_ANU : E_VIG;
+        /* se clasifica el PAR tal cual, sin derivar, para comparar las dos cascadas */
+        var a = (function(){
+          if(anu) return 0;
+          if(est === 'ENTREGADO') return 7;
+          if(est === 'LISTO')     return doc ? 6 : 5;
+          if(doc)                 return 6;
+          if(eta === 'FINALIZAR') return 4;
+          if(eta === 'DESPACHAR') return 3;
+          if(eta === 'LISTO')     return 4;
+          return 2;
+        })();
+        var b = fnSec({ estado:est, etapa:eta, anulado:anu, doc:doc ? { tipo:'REMISION' } : null });
+        if(a !== b) difS.push('estado=«' + est + '» etapa=«' + eta + '» doc=' + doc + ' anulado=' + anu +
+                              ' · servidor ' + a + ' · navegador ' + b);
+      }); }); }); });
+    if(difS.length){
+      fallos += difS.length;
+      Logger.log('FALLO  ' + difS.length + ' de ' + m + ' combinaciones NO coinciden:');
+      difS.slice(0,8).forEach(function(t){ Logger.log('       ' + t); });
+    }else Logger.log('OK     las ' + m + ' combinaciones caen en la misma seccion en los dos lados');
+  }
+
+  /* ---- 3 · y con los pedidos REALES del libro ---- */
+  Logger.log('');
+  Logger.log('--- 3 · los pedidos reales de R3_Pedidos ---');
+  var peds = filas(H.pedidos);
+  var ents = indicePor_(filas(H.entregas), 'P_num');
+  var prep = agrupaPor_(filas(H.prep), 'P_num');
+  var dets = agrupaPor_(filas(H.prepDet), 'P_num');
+  var difR = [], cuenta = { 0:0, 2:0, 3:0, 4:0, 5:0, 6:0, 7:0 };
+  peds.forEach(function(cab){
+    var pid = txt(cab.P_num);
+    if(!pid) return;
+    var ent = ents[pid] || {}, pa = prep[pid] || [], de = dets[pid] || [];
+    var sec = seccionDePedido_(cab, ent, pa, de);
+    if(cuenta[sec] !== undefined) cuenta[sec]++;
+    if(!fnSec || !fnDer) return;
+    /* se arma el pedido como lo veria el navegador y se clasifica alli */
+    var vivas = de.filter(function(r){ return txt(r[COL_EST]).toUpperCase() !== E_ANU; });
+    var d = fnDer(!!txt(ent.te),
+                  !!(txt(cab.Fecha_real_listo) || pa.some(function(r){ return txt(r.tl); })),
+                  !!txt(ent.Doc_tipo), vivas.length > 0, !!txt(cab.tc),
+                  txt(cab.Etapa_preparacion));
+    var secNav = fnSec({ estado:d.estado, etapa:d.etapa,
+                         anulado:txt(cab[COL_EST]).toUpperCase() === E_ANU,
+                         doc:txt(ent.Doc_tipo) ? { tipo:txt(ent.Doc_tipo) } : null });
+    if(sec !== secNav)
+      difR.push(pid + ' · hoja dice ' + txt(cab.Estado) + '/' + (txt(cab.Etapa_preparacion) || '(vacia)') +
+                ' · servidor ' + nombreSeccion_(sec) + ' · navegador ' + nombreSeccion_(secNav));
+  });
+  Logger.log('       reparto del servidor: 2=' + cuenta[2] + ' 3=' + cuenta[3] + ' 4=' + cuenta[4] +
+             ' 5=' + cuenta[5] + ' 6=' + cuenta[6] + ' · completados=' + cuenta[7] + ' · inhabilitados=' + cuenta[0]);
+  if(difR.length){
+    fallos += difR.length;
+    Logger.log('FALLO  ' + difR.length + ' pedido(s) se clasifican distinto:');
+    difR.forEach(function(t){ Logger.log('       ' + t); });
+  }else Logger.log('OK     los ' + peds.length + ' pedido(s) caen en la misma seccion en los dos lados');
+
+  Logger.log('');
+  Logger.log(fallos ? '>>> ' + fallos + ' FALLO(S). El servidor y la pantalla NO dicen lo mismo.'
+                    : '>>> El servidor y la pantalla coinciden en todo. Una sola autoridad.');
+  Logger.log('No se escribio nada.');
+  return { ok:fallos === 0, fallos:fallos, reparto:cuenta };
+}
+
+
+/* ####################################################################
+   v5.4.1 · SANEAR LAS CABECERAS · version que SI escribe
+   ####################################################################
+   heralsaRepararEtapas() simula. Esta escribe. Esta aparte y con nombre
+   explicito porque el editor de Apps Script ejecuta sin argumentos, y una
+   funcion que borra o reescribe no puede quedar a un clic de distancia de
+   la que solo mira.
+
+   Antes de escribir vuelve a simular e imprime lo que va a hacer, asi que
+   el registro queda con el antes y el despues de cada cabecera.
+   #################################################################### */
+function heralsaSanearCabecerasAHORA(){
+  Logger.log('########## SANEO DE CABECERAS · ESTA FUNCION ESCRIBE ##########');
+  Logger.log('Primero se vuelve a revisar lo que hay:');
+  Logger.log('');
+  var sim = repararEtapas_(true);
+  if(!sim || !sim.tocadas){
+    Logger.log('');
+    Logger.log('>>> No habia nada que sanear. No se escribio nada.');
+    return { ok:true, tocadas:0 };
+  }
+  Logger.log('');
+  Logger.log('########## AHORA SE ESCRIBE ##########');
+  var r = repararEtapas_(false);
+  Logger.log('');
+  Logger.log('>>> Ejecute heralsaRevisarLogica() para confirmar que el bloque 9 queda en OK.');
+  Logger.log('>>> Y heralsaVerificarSeccion() para confirmar que servidor y pantalla coinciden.');
+  return r;
+}
+
+
+/* ####################################################################
+   v5.4.1 · BUG_008 · EL RASTRO QUE DEJO EN LOS DOCUMENTOS YA EMITIDOS
+   ####################################################################
+   La correccion de BUG_008 evita que vuelva a pasar, pero los documentos
+   que se emitieron antes siguen escritos con la contradiccion: forma de
+   pago CREDITO y medio de pago concreto, normalmente «Efectivo» porque el
+   codigo viejo lo ponia por omision.
+
+   QUE HACE: deja la forma de pago INTACTA y corrige el medio a «Instrumento
+   no definido», que es lo que significa «a credito todavia no han pagado».
+   Por omision SIMULA.
+
+   QUE NO HACE, Y HAY QUE DECIRLO: no decide si la venta fue de verdad a
+   credito. Si a usted le pagaron de contado y la forma de pago quedo mal,
+   lo que hay que corregir es la FORMA, no el medio, y eso cambia la cartera
+   -- ese pedido estaria apareciendo como cuenta por cobrar sin serlo --.
+   Esa es una decision de negocio y se hace a mano, con conocimiento de la
+   venta. Esta funcion solo arregla la contradiccion tecnica.
+   #################################################################### */
+function heralsaRepararPagos(){ return repararPagos_(true); }
+function repararPagos_(soloSimular){
+  if(soloSimular === undefined) soloSimular = true;
+  Logger.log(soloSimular ? '===== SIMULACION · medios de pago a credito · NO escribe ====='
+                         : '===== CORRECCION DE MEDIOS DE PAGO · ESCRIBE =====');
+  var ents = filas(H.entregas);
+  var tocar = [], ok = 0, sinDoc = 0;
+  var VALIDOS = ['INSTRUMENTO NO DEFINIDO', 'CREDITO', 'POR DEFINIR'];
+
+  ents.forEach(function(e){
+    var pid = txt(e.P_num);
+    if(!pid || txt(e[COL_EST]).toUpperCase() === E_ANU) return;
+    if(!txt(e.Doc_tipo)){ sinDoc++; return; }
+    var forma = txt(e.Forma_pago), medio = txt(e.Medio_pago);
+    if(forma.toUpperCase().indexOf('CRED') !== 0){ ok++; return; }
+    if(!medio || VALIDOS.indexOf(medio.toUpperCase()) >= 0){ ok++; return; }
+    tocar.push({ pid:pid, doc:txt(e.Doc_tipo) + ' ' + txt(e.Doc_numero),
+                 forma:forma, medio:medio, plazo:numero(e.Plazo_dias) || 0,
+                 vence:txt(e.Vencimiento) });
+  });
+
+  Logger.log('Documentos sin problema          : ' + ok);
+  Logger.log('Pedidos sin documento (se saltan): ' + sinDoc);
+  Logger.log('Documentos a credito con medio concreto: ' + tocar.length);
+  tocar.forEach(function(t){
+    Logger.log('  ' + t.pid + ' · ' + t.doc + ' · ' + t.forma + ' a ' + t.plazo + ' dias' +
+      (t.vence ? ' (vence ' + t.vence + ')' : '') +
+      ' · medio «' + t.medio + '»  ->  «Instrumento no definido»');
+  });
+  if(!tocar.length){
+    Logger.log('Nada que corregir: ningun documento a credito declara un medio de pago concreto.');
+    return { ok:true, tocadas:0 };
+  }
+  Logger.log('');
+  Logger.log('ANTES DE APLICARLO, PREGUNTESE POR CADA UNO: ¿esa venta fue de verdad a credito?');
+  Logger.log('  SI fue a credito  -> esta correccion es la buena: el medio no debia existir.');
+  Logger.log('  NO, le pagaron ya -> lo que esta mal es la FORMA de pago, no el medio. Ese');
+  Logger.log('     pedido esta en su cartera como cuenta por cobrar sin serlo, y eso se');
+  Logger.log('     corrige a mano en R4_Entregas (Forma_pago, Plazo_dias y Vencimiento).');
+
+  if(soloSimular){
+    Logger.log('');
+    Logger.log('=== FIN DE LA SIMULACION · no se escribio nada ===');
+    Logger.log('Para aplicarlo: repararPagos_(false)');
+    return { ok:true, simulado:true, tocadas:tocar.length, detalle:tocar };
+  }
+
+  var hechas = 0, logs = [];
+  tocar.forEach(function(t){
+    escribirFila({ hoja:H.entregas, noSello:true,
+      claves:[{ columna:'P_num', valor:t.pid }],
+      fila:{ Medio_pago:'Instrumento no definido' } });
+    logs.push({ Tabla:H.entregas, Registro:t.pid, Campo:'Medio_pago',
+      Valor_antes:t.medio, Valor_despues:'Instrumento no definido',
+      Motivo:'BUG_008 · documento a credito no puede declarar medio de pago; ' +
+             'el medio se registra con el abono. La forma de pago no se toco.' });
+    hechas++;
+  });
+  try{ apiLogCambio_(logs, 'sistema'); }catch(e){}
+  Logger.log('');
+  Logger.log('=== CORREGIDOS ' + hechas + ' documento(s) ===');
+  Logger.log('Cada cambio quedo en LOG_Cambios. La forma de pago quedo intacta.');
+  return { ok:true, tocadas:hechas };
 }

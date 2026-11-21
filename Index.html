@@ -1397,7 +1397,7 @@ button,.modulo,.modulos-apoyo button,.fin-nav button{-webkit-tap-highlight-color
    Prototipo funcional de una sola página. Estado en localStorage.
    Cada objeto mapea 1:1 a una fila de las hojas R1..R4 de Google Sheets.
    ============================================================ */
-var VERSION_APP = 'v5.4';   /* <- lo lee verificarIndex() en el servidor. NO borrar esta línea. */
+var VERSION_APP = 'v5.4.1';   /* <- lo lee verificarIndex() en el servidor. NO borrar esta línea. */
 var KEY = 'heralsa.v5';   /* v5: la hoja es la única fuente de verdad. Al subir de versión cada celular bota su copia vieja y vuelve a leer la hoja. */
 var OPS = ['Hernando', 'Deyana'];
 var META = { i1:5, i2:90, i3:2, i7:95, i10:90 };
@@ -1860,12 +1860,45 @@ function hidratar(e){
      Proceso lineal estricto: NUEVO -> EN PREPARACION -> LISTO -> ENTREGADO.
      ANULADO sale de la línea en cualquier punto. Un pedido jamás puede estar
      en dos etapas, porque la etapa no es un dato: es una consecuencia. */
+  /* =====================================================================
+     v5.4.1 · LA ESPECIFICACION DE DERIVACION · UNA, EN DOS RUNTIMES
+     =====================================================================
+     Esta derivacion y cabeceraCoherente_ del Codigo.gs son la misma regla.
+     No se pueden fundir en una funcion -- el navegador y Apps Script son
+     tiempos de ejecucion separados -- pero SI tienen que decir lo mismo, y
+     heralsaVerificarSeccion() lo comprueba contra los datos reales.
+
+     LA ESPECIFICACION, en orden de autoridad de los hechos:
+       hay entrega (te)        -> ENTREGADO / LISTO
+       hay cierre (tl)         -> LISTO      / LISTO
+       hay documento           -> LISTO      / LISTO
+       no hay lineas           -> NUEVO      / ORGANIZAR
+       hay lineas y no hay tc  -> segun la etapa guardada: ORGANIZAR o DESPACHAR
+       hay tc y no hay tl      -> segun la etapa guardada: DESPACHAR o FINALIZAR
+
+     LO QUE CAMBIA RESPECTO A ANTES, y es la correccion:
+       · la etapa vacia ya no se rellena con el ESTADO. Ponia valores que no
+         son etapas («EN_PREPARACION») y el clasificador los mandaba a
+         Organizar por descarte. Ahora se deriva del hecho: si el despacho
+         ya empezo (hay tc), la etapa es DESPACHAR, no Organizar.
+       · un pedido sin lineas es NUEVO aunque su etapa diga ORGANIZAR.
+       · un pedido con documento cuenta como cerrado aunque falte el tl: se
+         le emitio documento, asi que la preparacion ya termino.
+     ===================================================================== */
   pedidos.forEach(function(p){
     p.partes.sort(function(a, b){ return a.t < b.t ? -1 : 1; });
     p.partes.forEach(function(x){ x.ruta = rutaDe(x) || null; });     /* deducida, siempre */
     if(p.partes.length && !p.tipo) p.tipo = p.partes.length > 1 ? 'MIXTO' : p.partes[0].t;
-    p.estado = p.entrega ? 'ENTREGADO' : (!p.partes.length && p.etapa !== 'ORGANIZAR' ? 'NUEVO' : (tlPedido(p) ? 'LISTO' : 'EN_PREPARACION'));
-    if(!p.etapa) p.etapa = p.estado === 'NUEVO' ? 'ORGANIZAR' : p.estado;
+
+    var etaGuardada = String(p.etapa || '').toUpperCase();
+    var hayLineas = 0;
+    p.partes.forEach(function(x){ hayLineas += (x.lin || []).length + (x.refFalta || []).length; });
+    var tl  = !!(tlPedido(p) || p.__tl3);
+    var doc = !!(p.doc && p.doc.tipo);
+
+    var d = derivarPar_(!!p.entrega, tl, doc, hayLineas > 0, !!p.tc, etaGuardada);
+    p.estado = d.estado;
+    p.etapa  = d.etapa;
   });
 
   /* ---- AUDITOR: las 3 hojas tienen que ser UN expediente, no tres listas ---- */
@@ -15392,6 +15425,42 @@ window.addEventListener('focus',function(){if(puedeSincronizar_())sincronizar(tr
    Ahora se formatea aqui, con el separador de miles colombiano (punto).
    pesoCO se sigue usando para REDONDEAR, que es lo que sabe hacer.
    ===================================================================== */
+/* =====================================================================
+   v5.4.1 · derivarPar_ · LA ESPECIFICACION, EN UNA FUNCION PURA
+   =====================================================================
+   El estado y la etapa de un pedido NO se leen de la hoja: se DEDUCEN de
+   los hechos. Esta funcion es esa deduccion, aislada y sin efectos, para
+   que se pueda comprobar caso por caso.
+
+   LA MISMA FUNCION, CON EL MISMO NOMBRE Y LA MISMA FIRMA, ESTA EN
+   Codigo.gs. No se pueden fundir -- el navegador y Apps Script son tiempos
+   de ejecucion separados -- pero heralsaVerificarSeccion() las ejecuta las
+   dos con las 192 combinaciones posibles y avisa si dejan de coincidir.
+
+   Por que hace falta esta garantia: porque ya paso. Hasta la v5.4 el
+   servidor leia la columna Estado y el navegador la deducia, y para P-007
+   -- con fecha de entrega y la columna en LISTO -- uno decia «6 Entrega» y
+   el otro «Completados». Nadie lo noto hasta cruzar dos registros a mano.
+   ===================================================================== */
+function derivarPar_(hayEntrega, hayTl, hayDoc, hayLineas, hayTc, etapaGuardada){
+  var eta = String(etapaGuardada || '').toUpperCase();
+  if(hayEntrega) return { estado:'ENTREGADO', etapa:'LISTO', porque:'tiene fecha de entrega (te)' };
+  if(hayTl)      return { estado:'LISTO',     etapa:'LISTO', porque:'tiene fecha de cierre (tl)' };
+  if(hayDoc)     return { estado:'LISTO',     etapa:'LISTO', porque:'ya tiene documento emitido' };
+  if(!hayLineas) return { estado:'NUEVO',     etapa:'ORGANIZAR', porque:'no tiene lineas que preparar' };
+  if(!hayTc){
+    /* con lineas y sin iniciar el despacho las dos etapas son legitimas:
+       ORGANIZAR (cargando) y DESPACHAR (enviado, sin iniciar). Se respeta la
+       guardada; cualquier otra cosa cae en ORGANIZAR. */
+    var t1 = (eta === 'DESPACHAR') ? 'DESPACHAR' : 'ORGANIZAR';
+    return { estado:(t1 === 'ORGANIZAR') ? 'NUEVO' : 'EN_PREPARACION', etapa:t1,
+             porque:'tiene lineas y no ha iniciado el despacho (no hay tc)' };
+  }
+  /* iniciado y sin cerrar: DESPACHAR o FINALIZAR, se respeta la guardada */
+  return { estado:'EN_PREPARACION', etapa:(eta === 'FINALIZAR') ? 'FINALIZAR' : 'DESPACHAR',
+           porque:'el despacho esta iniciado (tc) y no se ha cerrado' };
+}
+
 /** Lee el canal del cliente. Vacio si la hoja no lo dice: ahi SI hay que preguntar. */
 function canalDeTexto_(v){
   var t = String(v == null ? '' : v).trim().toUpperCase();
