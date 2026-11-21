@@ -2065,7 +2065,7 @@ function cerrarHuecosMigracion(soloSimular){
 }
 
 /* ===================== PRUEBA Y DIAGNOSTICO ===================== */
-var VERSION_BACKEND = 'v5.5.2';
+var VERSION_BACKEND = 'v5.5.3';
 
 /**
  * Lee el archivo Index.html REAL del proyecto y dice si quedo bien pegado.
@@ -4218,7 +4218,7 @@ function apiAnalisisFinanciero(token){
 /** Ejecutar esta. Dice si los tres archivos quedaron bien pegados. */
 function heralsaVersion(){
   Logger.log('=========== VERSIONES ===========');
-  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.5.2');
+  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.5.3');
   Logger.log('Fase 2    : ' + VERSION_FASE2 + '      <- debe decir f2.2');
   var vIndex = null, largo = 0, cierra = false;
   try{
@@ -4226,7 +4226,7 @@ function heralsaVersion(){
     largo  = t.length;
     vIndex = (t.match(/VERSION_APP\s*=\s*'([^']+)'/) || [])[1] || null;
     cierra = t.replace(/\s+$/, '').slice(-7) === '</html>';
-    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.5.2');
+    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.5.3');
     Logger.log('Termina en </html>: ' + (cierra ? 'SI' : 'NO  *** QUEDO CORTADO AL PEGAR ***'));
     /* El tamano que devuelve getContent() NO coincide con el del archivo
        fuente: HtmlService no entrega el texto literal. Comparar tamanos aqui
@@ -4241,7 +4241,7 @@ function heralsaVersion(){
   }
   Logger.log('---------------------------------');
   if(vIndex === VERSION_BACKEND && cierra)
-    Logger.log('>>> TODO PAREJO EN v5.5.2. El codigo esta bien pegado.');
+    Logger.log('>>> TODO PAREJO EN v5.5.3. El codigo esta bien pegado.');
   else if(vIndex && vIndex !== VERSION_BACKEND)
     Logger.log('>>> NO COINCIDEN. Vuelva a pegar el archivo que se quedo atras.');
   else
@@ -4382,6 +4382,8 @@ function heralsaDiagnosticarIndex(){
   var unicos = [
     ['A.alegraGenerar =', 'hubo DOS definiciones y la segunda tapaba la primera'],
     ['vaciarCola=function', 'BUG_021 · hubo una segunda definicion que dejaba la primera muerta'],
+    ['A.escAbrir=function', 'BUG_027 · hubo DOS, y la tapada escondia un segundo emisor de documentos'],
+    ['A.facEjecutar =', 'BUG_027 · el emisor de documentos es UNO'],
     ['function toast(',   'un solo canal de avisos']
   ];
   Logger.log('--- 4 · lo que tiene que estar UNA sola vez ---');
