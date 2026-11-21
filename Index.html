@@ -1397,7 +1397,7 @@ button,.modulo,.modulos-apoyo button,.fin-nav button{-webkit-tap-highlight-color
    Prototipo funcional de una sola página. Estado en localStorage.
    Cada objeto mapea 1:1 a una fila de las hojas R1..R4 de Google Sheets.
    ============================================================ */
-var VERSION_APP = 'v5.5.1';   /* <- lo lee verificarIndex() en el servidor. NO borrar esta línea. */
+var VERSION_APP = 'v5.5.2';   /* <- lo lee verificarIndex() en el servidor. NO borrar esta línea. */
 var KEY = 'heralsa.v5';   /* v5: la hoja es la única fuente de verdad. Al subir de versión cada celular bota su copia vieja y vuelve a leer la hoja. */
 var OPS = ['Hernando', 'Deyana'];
 var META = { i1:5, i2:90, i3:2, i7:95, i10:90 };
@@ -4007,9 +4007,17 @@ function bannerSync(){
   var pend = (DB.cola || []).length + (DB.colaPre || []).length
            + (DB.colaDoc || []).length + (DB.colaMov || []).length;
   if(!ONLINE) return '<div class="sync off">' + ico + ' Modo prueba: datos de ejemplo, solo en este celular</div>';
+  /* v5.5.2 · BUG_024 · la cola parada se dice y se puede abrir. Va ANTES de
+     todo lo demas: si hay trabajo que no va a subir nunca, es lo primero
+     que el operador tiene que saber. */
+  if(colaAtascada_)
+    return '<button class="sync off" style="width:100%;font:inherit;cursor:pointer;text-align:left;'
+      + 'background:var(--ro2);border-color:var(--roline);color:var(--ro)" onclick="A.verCola()">'
+      + ico + ' ' + pend + ' registro(s) que la hoja RECHAZA · se dejó de reintentar · toca para ver y decidir</button>';
   if(SYNC.estado === 'leyendo') return '<div class="sync">' + ico + ' Leyendo la hoja de cálculo...</div>';
-  if(SYNC.estado === 'enviando') return '<div class="sync">' + ico + ' Enviando ' + pend + ' registro(s) a la hoja...</div>';
-  if(pend) return '<button class="sync off" style="width:100%;font:inherit;cursor:pointer" onclick="A.refrescar()">' + ico + ' ' + pend + ' registro(s) esperando señal · toca para reintentar</button>';
+  if(SYNC.estado === 'enviando') return '<button class="sync" style="width:100%;font:inherit;cursor:pointer;text-align:left" onclick="A.verCola()">'
+    + ico + ' Enviando ' + pend + ' registro(s) a la hoja... · toca para ver qué</button>';
+  if(pend) return '<button class="sync off" style="width:100%;font:inherit;cursor:pointer" onclick="A.verCola()">' + ico + ' ' + pend + ' registro(s) esperando señal · toca para ver y reintentar</button>';
   if(SYNC.estado === 'pendiente') return '<button class="sync off" style="width:100%;font:inherit;cursor:pointer" onclick="A.refrescar()">'
     + ico + ' Sin señal con la hoja · no se pueden crear pedidos nuevos · toca para reintentar</button>';
   return '<button class="sync" style="width:100%;font:inherit;cursor:pointer;text-align:left" onclick="A.refrescar()">'
@@ -14857,6 +14865,11 @@ A.escAbrir=function(pid){
 /* Un rechazo de validación no se descarta en silencio. Las escrituras aceptadas
    son idempotentes por llave; conservar el lote permite corregir y reintentar. */
 var colaOcupada_=false;
+/* v5.5.2 · BUG_024 · memoria de lo que la hoja rechazo y de si la cola
+   quedo parada. No es decoracion: sin esto el operador no tiene forma de
+   saber que hay trabajo que nunca va a subir, y yo no tengo forma de
+   diagnosticarlo, porque la cola vive en el navegador y no en la hoja. */
+var colaRechazada_=[], colaAtascada_='';
 vaciarCola=function(cb){
   DB.cola=DB.cola||[];DB.colaPre=DB.colaPre||[];DB.colaMov=DB.colaMov||[];DB.colaDoc=DB.colaDoc||[];
   if(!ONLINE){pintarSync();return;}
@@ -14888,19 +14901,64 @@ vaciarCola=function(cb){
     var lote=DB.cola.slice(0,20);SYNC.estado='enviando';pintarSync();
     srv('apiGuardar',[lote],function(r){
       var rechazadas=(r&&r.rechazadas)?r.rechazadas:[];
-      if(rechazadas.length){pendiente();toast('La hoja rechazó datos y se conservaron en cola: '+rechazadas.join(' · '));return;}
-      DB.cola=DB.cola.slice(lote.length);save();
+      if(rechazadas.length){pendiente();toast('La hoja rechazó datos y se conservaron en cola: '+rechazadas.join(' · '),true);return;}
+      DB.cola=DB.cola.slice(lote.length);
+      /* =================================================================
+         v5.5.2 · BUG_023 · LAS FILAS QUE EL SERVIDOR NO ESCRIBIO
+         =================================================================
+         El servidor dice EXACTAMENTE cuales no escribio y por que, como
+         DATOS y no dentro del texto de un error. Se sacan por identidad --
+         hoja mas clave -- sin interpretar ninguna cadena. Antes el
+         navegador adivinaba el pedido leyendolo del mensaje, y cuando no
+         acertaba descartaba 0 filas y reenviaba el mismo lote para
+         siempre: era el bucle que colapso la aplicacion.
+         ================================================================= */
+      var rc=(r&&r.rechazadas_cierre)?r.rechazadas_cierre:[];
+      if(rc.length){
+        var llaves={};rc.forEach(function(x){llaves[String(x.hoja)+'|'+String(x.clave)]=1;});
+        DB.cola=DB.cola.filter(function(d){
+          var k=String(d.hoja)+'|'+(d.claves||[]).map(function(c){return String(c.columna)+'='+String(c.valor);}).join(' · ');
+          return !llaves[k];
+        });
+        colaRechazada_=(colaRechazada_||[]).concat(rc);
+        toast(rc.length+' fila(s) no se escribieron: '+rc[0].motivo+
+              (rc.length>1?' (y '+(rc.length-1)+' mas)':'')+' · El resto del lote sí se guardó.',true);
+      }
+      save();
       var blo=(r&&r.bloqueadas)?r.bloqueadas:[];
-      if(blo.length)toast('La hoja rechazó '+blo.length+' escritura(s): '+blo.join(', ')+' está(n) inhabilitado(s). Actualizando...');
+      if(blo.length)toast('La hoja rechazó '+blo.length+' escritura(s): '+blo.join(', ')+' está(n) inhabilitado(s). Actualizando...',true);
       colaOcupada_=false;
       if(mas()){vaciarCola(cb);return;}
-      SYNC.estado='listo';pintarSync();if(blo.length){sincronizar(true);return;}if(cb)cb();
+      SYNC.estado='listo';pintarSync();if(blo.length||rc.length){sincronizar(true);return;}if(cb)cb();
     },function(e){
       var msg=e&&e.message?e.message:String(e||''),m=msg.match(/CONFLICTO_CIERRE:\s*(\S+)/);
       if(m){
+        /* Red de seguridad para un servidor sin actualizar: desde v5.5.2 el
+           servidor ya no lanza esto. Si llega, se descarta por pedido igual
+           que antes, PERO con el cortacircuitos de abajo. */
         var pid=m[1],antes=DB.cola.length;
-        DB.cola=DB.cola.filter(function(d){var id=String((d.claves&&d.claves[0]&&d.claves[0].valor)||(d.fila||{}).P_num||'');return !(id===pid&&['R3_Pedidos','R2_Preparacion','R2_Detalle'].indexOf(d.hoja)>=0);});save();
-        toast(pid+' ya estaba LISTO en otro dispositivo. Se descartó sólo su preparación atrasada ('+(antes-DB.cola.length)+' fila(s)); entrega y documento siguen habilitados.');
+        DB.cola=DB.cola.filter(function(d){var id=String((d.claves&&d.claves[0]&&d.claves[0].valor)||(d.fila||{}).P_num||'').trim();return !(id===pid&&['R3_Pedidos','R2_Preparacion','R2_Detalle'].indexOf(d.hoja)>=0);});save();
+        /* =============================================================
+           v5.5.2 · BUG_024 · CORTACIRCUITOS · NO SE REINTENTA SIN AVANZAR
+           =============================================================
+           ESTO es lo que convirtio un rechazo en un colapso: si el filtro
+           no quitaba ninguna fila, el codigo volvia a llamar vaciarCola
+           con la cola INTACTA. El mismo lote, el mismo rechazo, otra vez,
+           cada pocos segundos y para siempre, con un aviso encima.
+           La regla general, y vale para cualquier causa futura: un
+           reintento que no cambia nada no es un reintento, es un bucle.
+           Si no hubo avance se PARA, se marca pendiente y se dice una vez
+           con aviso fijo, con el boton para ver y vaciar la cola.
+           ============================================================= */
+        if(antes===DB.cola.length){
+          colaAtascada_=msg;
+          pendiente();
+          toast('La hoja rechaza '+antes+' fila(s) de la cola y no se puede saber cuál: '+msg+
+                ' · Se dejó de reintentar para no bloquear la app. Toca el aviso de Inicio para ver y vaciar la cola.',true);
+          return;
+        }
+        toast(pid+' ya estaba LISTO en otro dispositivo. Se descartó su preparación atrasada ('+
+              (antes-DB.cola.length)+' fila(s)); entrega y documento siguen habilitados.',true);
         colaOcupada_=false;if(mas()){vaciarCola(cb);return;}sincronizar(true);return;
       }
       pendiente();
@@ -14972,6 +15030,110 @@ vaciarCola=function(cb){
     return;
   }
   continuar();
+};
+
+/* =====================================================================
+   v5.5.2 · BUG_024 · LA COLA SE PUEDE VER, Y ESO FALTABA
+   =====================================================================
+   POR QUE ES NECESARIO, y no es un adorno: la cola vive en el
+   almacenamiento de ESTE navegador. No esta en la hoja. Cuando una fila se
+   atasca, el operador ve «Enviando 2 registro(s)» para siempre y no tiene
+   forma de saber cuales son, ni de sacarlas; y quien revisa el sistema
+   desde fuera -- mirando la hoja -- no puede verlas en absoluto. Un dato
+   invisible que bloquea el trabajo es lo peor de los dos mundos.
+
+   Esta pantalla muestra cada escritura pendiente: a que hoja va, de que
+   registro es, y por que la rechazo la hoja si lo dijo. Y permite dos
+   cosas distintas, que no hay que confundir:
+
+     REINTENTAR   vuelve a empujar la cola. No pierde nada.
+     VACIAR       DESCARTA el trabajo que no se pudo guardar. Pierde datos,
+                  asi que pide confirmacion escrita y deja constancia en el
+                  registro local de la app. Se ofrece porque la alternativa
+                  -- una cola atascada para siempre -- bloquea TODO lo
+                  demas, y eso es peor.
+   ===================================================================== */
+A.verCola = function(){
+  W = { colaConf:'' };
+  go('cola');
+};
+A.colaConf = function(v){ W.colaConf = String(v || ''); render(); };
+A.colaReintentar = function(){
+  colaAtascada_ = '';
+  toast('Reintentando subir ' + ((DB.cola||[]).length + (DB.colaPre||[]).length
+        + (DB.colaDoc||[]).length + (DB.colaMov||[]).length) + ' registro(s)...');
+  vaciarCola();
+  tab('home');
+};
+A.colaVaciar = function(){
+  if(String(W.colaConf || '').trim().toUpperCase() !== 'DESCARTAR'){
+    toast('Escribe DESCARTAR en mayúsculas para confirmar que se pierde ese trabajo.');
+    return;
+  }
+  var n = (DB.cola||[]).length + (DB.colaPre||[]).length + (DB.colaDoc||[]).length + (DB.colaMov||[]).length;
+  DB.cambios = (DB.cambios || []);
+  DB.cambios.unshift({ num:'', fecha:nowT(), tabla:'(cola local)', registro:'-', campo:'cola',
+    antes:n + ' registro(s) sin subir', despues:'descartados',
+    op:DB.operador || '', motivo:'El operador vació la cola atascada. Motivo del rechazo: ' + (colaAtascada_ || 'sin mensaje') });
+  DB.cola = []; DB.colaPre = []; DB.colaDoc = []; DB.colaMov = [];
+  colaRechazada_ = []; colaAtascada_ = '';
+  save();
+  toast('Se descartaron ' + n + ' registro(s). Quedó constancia en el historial de cambios de la app.', true);
+  sincronizar(true);
+  tab('home');
+};
+
+S.cola = function(){
+  var filas = [];
+  (DB.colaPre || []).forEach(function(j){ filas.push(['Preparación', j.pid, j.accion || '', '']); });
+  (DB.cola || []).forEach(function(d){
+    var id = String((d.claves && d.claves[0] && d.claves[0].valor) || (d.fila || {}).P_num || '(sin clave)');
+    var clv = String(d.hoja) + '|' + (d.claves||[]).map(function(c){ return String(c.columna)+'='+String(c.valor); }).join(' · ');
+    var mot = '';
+    (colaRechazada_ || []).forEach(function(x){ if(String(x.hoja)+'|'+String(x.clave) === clv) mot = x.motivo; });
+    filas.push([String(d.hoja), id, '', mot]);
+  });
+  (DB.colaDoc || []).forEach(function(j){ filas.push(['Documento (sin numerar)', j.pid, j.tipo || '', '']); });
+  (DB.colaMov || []).forEach(function(j){ filas.push(['Kardex', (j.movs||[]).length + ' movimiento(s)', '', '']); });
+
+  var b = '<h1 class="q">Lo que falta subir a la hoja</h1>';
+  if(!filas.length)
+    b += '<p class="sub">Nada pendiente: todo lo que se hizo en este dispositivo ya está en la hoja.</p>'
+       + '<div class="empty">La cola está vacía.</div>';
+  else {
+    b += '<p class="sub">' + filas.length + ' escritura(s) esperando. Mientras haya algo aquí, '
+       + 'ese trabajo <b>sólo existe en este dispositivo</b>.</p>';
+    if(colaAtascada_)
+      b += '<div class="avisos"><b>La hoja rechaza esta cola y se dejó de reintentar</b><ul><li>'
+         + esc(colaAtascada_) + '</li></ul></div>';
+    b += '<div class="box"><div class="boxb">';
+    filas.forEach(function(f){
+      b += '<div class="it" style="cursor:default"><div class="gr"><b>' + esc(f[0])
+        + (f[2] ? ' · ' + esc(f[2]) : '') + '</b><span>' + esc(f[1])
+        + (f[3] ? ' — ' + esc(f[3]) : '') + '</span></div></div>';
+    });
+    b += '</div></div>';
+    b += '<div class="note" style="margin-top:13px"><svg class="i sm"><use href="#i-alert"/></svg><div>'
+      + '<b>Reintentar</b> no pierde nada: vuelve a empujar la cola. '
+      + '<b>Vaciar</b> descarta este trabajo para siempre, y se usa sólo cuando la hoja lo rechaza '
+      + 'y no hay forma de corregirlo: una cola atascada bloquea todo lo demás.</div></div>';
+    if(colaAtascada_)
+      b += '<div class="fin-form card" style="margin-top:12px"><label class="f">Para vaciarla, escribe <b>DESCARTAR</b>'
+        + '<input class="f" value="' + esc(W.colaConf || '') + '" oninput="A.colaConf(this.value)" '
+        + 'autocomplete="off" spellcheck="false" placeholder="DESCARTAR"></label></div>';
+  }
+
+  var foot = '';
+  if(filas.length)
+    foot = '<div class="row2"><button class="btn pri" onclick="A.colaReintentar()">Reintentar</button>'
+      + (colaAtascada_
+          ? '<button class="btn gho" ' + (String(W.colaConf||'').trim().toUpperCase()==='DESCARTAR' ? '' : 'disabled ')
+            + 'onclick="A.colaVaciar()">Vaciar la cola</button>'
+          : '<button class="btn gho" onclick="tab(\'home\')">Volver</button>')
+      + '</div>';
+  else foot = '<button class="btn gho" onclick="tab(\'home\')">Volver</button>';
+
+  return { title:'Cola de escritura', sub:filas.length + ' pendiente(s)', back:true, body:b, foot:foot };
 };
 
 /* Avisos reales de cobro y pago en Inicio; los saldos siempre vienen del servidor. */
