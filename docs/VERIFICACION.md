@@ -1,4 +1,4 @@
-# Verificación de aceptación · v5.4.1
+# Verificación de aceptación · v5.4.2
 
 Dos clases de comprobación, y no sirven para lo mismo:
 
@@ -14,7 +14,7 @@ Dos clases de comprobación, y no sirven para lo mismo:
 
 | Comprobación | Resultado | Qué prueba |
 |---|---|---|
-| `heralsaVersion()` | v5.4.1 en los dos archivos · cierra en `</html>` | el código está completo y parejo |
+| `heralsaVersion()` | v5.4.2 en los dos archivos · cierra en `</html>` | el código está completo y parejo |
 | `heralsaVerificarSeccion()` | 192 / 168 / 21 pedidos · **coinciden en todo** | **BUG_004** · servidor y pantalla, una sola autoridad |
 | `heralsaVerificarCanal()` | 16 de 16 casos coinciden | **BUG_002** · la regla del canal es la misma en los dos lados |
 | `heralsaRevisarLogica()` | **0 fallos · 0 avisos** · los 9 bloques en OK | los invariantes de estructura, incluido el bloque 9 (BUG_004) |
@@ -165,7 +165,7 @@ No son defectos del código: son registros anteriores que hay que resolver.
 
 | Pedido | Qué pasa | Decisión |
 |---|---|---|
-| **P-007** | documento a crédito con medio «Efectivo», por el defecto de BUG_008 | **confirmado: fue a crédito** → `repararPagos_(false)` |
+| **P-007** | documento a crédito con medio «Efectivo», por el defecto de BUG_008 | **confirmado: fue a crédito** → `heralsaRepararPagosAHORA()` |
 | **P-001** | está en LISTO sin unidades despachadas | corregirle las cantidades, o inhabilitarlo |
 | **P-012** | la entrega está fechada antes del cierre | corregir `te` o `tl` en la hoja |
 

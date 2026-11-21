@@ -1762,7 +1762,7 @@ function cerrarHuecosMigracion(soloSimular){
 }
 
 /* ===================== PRUEBA Y DIAGNOSTICO ===================== */
-var VERSION_BACKEND = 'v5.4.1';
+var VERSION_BACKEND = 'v5.4.2';
 
 /**
  * Lee el archivo Index.html REAL del proyecto y dice si quedo bien pegado.
@@ -3804,7 +3804,7 @@ function apiAnalisisFinanciero(token){
 /** Ejecutar esta. Dice si los tres archivos quedaron bien pegados. */
 function heralsaVersion(){
   Logger.log('=========== VERSIONES ===========');
-  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.4.1');
+  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.4.2');
   Logger.log('Fase 2    : ' + VERSION_FASE2 + '      <- debe decir f2.2');
   var vIndex = null, largo = 0, cierra = false;
   try{
@@ -3812,7 +3812,7 @@ function heralsaVersion(){
     largo  = t.length;
     vIndex = (t.match(/VERSION_APP\s*=\s*'([^']+)'/) || [])[1] || null;
     cierra = t.replace(/\s+$/, '').slice(-7) === '</html>';
-    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.4.1');
+    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.4.2');
     Logger.log('Termina en </html>: ' + (cierra ? 'SI' : 'NO  *** QUEDO CORTADO AL PEGAR ***'));
     /* El tamano que devuelve getContent() NO coincide con el del archivo
        fuente: HtmlService no entrega el texto literal. Comparar tamanos aqui
@@ -3827,7 +3827,7 @@ function heralsaVersion(){
   }
   Logger.log('---------------------------------');
   if(vIndex === VERSION_BACKEND && cierra)
-    Logger.log('>>> TODO PAREJO EN v5.4.1. El codigo esta bien pegado.');
+    Logger.log('>>> TODO PAREJO EN v5.4.2. El codigo esta bien pegado.');
   else if(vIndex && vIndex !== VERSION_BACKEND)
     Logger.log('>>> NO COINCIDEN. Vuelva a pegar el archivo que se quedo atras.');
   else
@@ -6980,6 +6980,41 @@ function heralsaSanearCabecerasAHORA(){
    venta. Esta funcion solo arregla la contradiccion tecnica.
    #################################################################### */
 function heralsaRepararPagos(){ return repararPagos_(true); }
+
+/* =====================================================================
+   v5.4.2 · LA PAREJA VISIBLE DE repararPagos_
+   =====================================================================
+   Apps Script oculta del desplegable las funciones que terminan en «_», asi
+   que repararPagos_(false) no se podia ejecutar desde el editor sin escribir
+   codigo. A las cabeceras les hice su version visible y a los pagos no: el
+   mismo criterio tiene que valer para los dos.
+
+   Antes de escribir vuelve a simular e imprime lo que va a hacer, igual que
+   heralsaSanearCabecerasAHORA. La forma de pago NO se toca nunca: solo el
+   medio, que es el que no debia existir en una venta a credito.
+   ===================================================================== */
+function heralsaRepararPagosAHORA(){
+  Logger.log('########## CORRECCION DE MEDIOS DE PAGO · ESTA FUNCION ESCRIBE ##########');
+  Logger.log('Primero se vuelve a revisar lo que hay:');
+  Logger.log('');
+  var sim = repararPagos_(true);
+  if(!sim || !sim.tocadas){
+    Logger.log('');
+    Logger.log('>>> No habia nada que corregir. No se escribio nada.');
+    return { ok:true, tocadas:0 };
+  }
+  Logger.log('');
+  Logger.log('########## AHORA SE ESCRIBE ##########');
+  Logger.log('RECUERDE: esto corrige el MEDIO de pago. La FORMA de pago queda');
+  Logger.log('intacta. Si alguna de esas ventas NO fue a credito, lo que esta mal');
+  Logger.log('es la forma, y eso se corrige a mano porque cambia su cartera.');
+  Logger.log('');
+  var r = repararPagos_(false);
+  Logger.log('');
+  Logger.log('>>> Ejecute heralsaRevisarCoherencia() para confirmar que no queda');
+  Logger.log('>>> ninguna «Incoherencia de pago».');
+  return r;
+}
 function repararPagos_(soloSimular){
   if(soloSimular === undefined) soloSimular = true;
   Logger.log(soloSimular ? '===== SIMULACION · medios de pago a credito · NO escribe ====='

@@ -106,6 +106,7 @@ Se ejecutan desde el desplegable de funciones del editor de Apps Script.
 | `heralsaRepararEtapas()` | **simula** el saneo de cabeceras | no |
 | `heralsaSanearCabecerasAHORA()` | simula, imprime **y aplica** el saneo | **sí** |
 | `heralsaRepararPagos()` | **simula** la corrección de medios de pago a crédito | no |
+| `heralsaRepararPagosAHORA()` | simula, imprime **y aplica** esa corrección | **sí** |
 | `heralsaRecalcularIndicadores()` | los diez indicadores | **sí** |
 | `heralsaCrearColumnasV53()` | crea columnas que falten · aditivo, re-ejecutable | **sí** |
 | `heralsaLimpiarParaProduccion()` | borra datos de prueba · doble confirmación y respaldo | **sí** |
