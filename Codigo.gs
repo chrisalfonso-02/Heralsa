@@ -380,6 +380,25 @@ function apiGuardar_(datos){
         var ref = txt((d.fila || {})['Referencia']);
         if(malas[ref]){ rechazadas.push(malas[ref]); continue; }
       }
+      /* =================================================================
+         v5.4 · BUG_004 · EL ESCRITOR LATERAL YA NO PUEDE DESALINEAR EL PAR
+         =================================================================
+         packPedido() sube la cabecera de R3 con la lista de columnas de
+         sheetData(3), que NO incluye Etapa_preparacion. Por eso un flujo
+         como registrar la entrega podia mover Estado a ENTREGADO dejando
+         Etapa_preparacion en FINALIZAR, y el pedido entraba en la
+         combinacion que lo atasca.
+         Ahora, cuando una fila de R3 trae Estado, se completa con la Etapa
+         que le corresponde a ese Estado. No se adivina nada: se usa la
+         misma tabla de equivalencia del clasificador.
+         ================================================================= */
+      if(d && d.hoja === H.pedidos && d.fila && txt(d.fila.Estado)){
+        var etq = etapaParaEstado_(txt(d.fila.Estado));
+        if(etq && !txt(d.fila.Etapa_preparacion)){
+          d.fila.Etapa_preparacion = etq;
+          d.atomico = true;
+        }
+      }
       var r = escribirFila(d);
       if(r.bloqueada) bloqueadas.push(r.id || d.hoja);
       else if(r.escrita) n++;
@@ -530,6 +549,39 @@ function escribirFila(d){
   /* escribe por tramos contiguos: solo lo tocado, en el menor numero de llamadas */
   var cols = [];
   for(var c = 0; c < ancho; c++) if(marca[c]) cols.push(c);
+
+  /* =====================================================================
+     v5.4 · BUG_004 · ESCRITURA ATOMICA PARA LA CABECERA DEL PEDIDO
+     =====================================================================
+     POR QUE HACE FALTA, medido: en R3_Pedidos la columna Estado es la 15 y
+     Etapa_preparacion la 26, con Registrado_en, Finalizado_en y Revision en
+     medio. La escritura por tramos contiguos las parte en CINCO llamadas
+     setValues separadas. Si la ejecucion se corta entre dos de ellas --
+     tiempo de espera de Apps Script, cuota, el candado liberado en el
+     finally -- la cabecera queda con Estado de un cierre y Etapa del paso
+     anterior. Eso es EXACTAMENTE lo que atasco a P-020: la tarjeta lo
+     contaba en Finalizar, su lista no lo encontraba y el servidor rechazaba
+     toda accion.
+
+     Con atomico:true se escribe UN solo setValues desde la primera columna
+     tocada hasta la ultima. Las celdas intermedias se reescriben con el
+     valor que ya tenian (se leyeron en `actual` tres lineas arriba), asi
+     que el resultado es identico celda por celda.
+
+     POR QUE NO SE PONE ATOMICO EN TODAS LAS HOJAS: reescribir una celda
+     intermedia con su propio valor convierte una formula en su resultado.
+     Las hojas de registro las escribe solo la app, pero el usuario puede
+     haber puesto una formula en cualquier otra. Asi que esto se activa
+     unicamente donde la atomicidad del par importa: la cabecera de
+     R3_Pedidos. Una optimizacion que pueda destruir una formula del usuario
+     no se aplica «por si acaso»: se aplica donde se necesita y se dice.
+     ===================================================================== */
+  if(d.atomico && cols.length > 1){
+    var cA = cols[0], cZ = cols[cols.length - 1];
+    sh.getRange(fila, cA + 1, 1, cZ - cA + 1).setValues([actual.slice(cA, cZ + 1)]);
+    return { escrita:true, fila:fila, nueva:nueva, atomica:true };
+  }
+
   var i = 0;
   while(i < cols.length){
     var j = i;
@@ -786,12 +838,41 @@ function apiPreparacion_(pid, accion, datos, operador){
     var previo=preparacionResultadoPrevio_(pid,solicitud);
     if(previo)return previo;
     if(txt(cab.Estado_registro).toUpperCase() === E_ANU) throw new Error(pid + ' esta anulado.');
-    var etapa = txt(cab.Etapa_preparacion).toUpperCase() || (txt(cab.Estado).toUpperCase() === 'NUEVO' ? 'ORGANIZAR' : 'DESPACHAR');
+
+    /* =====================================================================
+       v5.4 · BUG_004 · PRIMERO SE SANA LA CABECERA, DESPUES SE TRABAJA
+       =====================================================================
+       Si Estado y Etapa_preparacion se contradicen, se corrigen AQUI, con
+       los hechos como juez, y queda el rastro en LOG_Cambios. Asi un pedido
+       que quedo atascado por una escritura cortada se desatasca solo en
+       cuanto alguien lo toca, sin tener que editar la hoja a mano y sin que
+       el operador tenga que entender nada.
+       Es idempotente: si el par ya es coherente no escribe nada.
+       ===================================================================== */
+    var norm = normalizarCabecera_(pid, cab, operador, 'Saneado al ' + accion);
+    if(norm.cambio) cab = norm.cab;
+
+    var etapa = etapaDeCabecera_(cab);
     var revision = numero(cab.Revision) || 1;
-    if(accion === 'CERRAR' && txt(cab.Estado).toUpperCase() === 'LISTO')
+    var estadoCab = txt(cab.Estado).toUpperCase();
+
+    /* el atajo idempotente del cierre exige que las DOS columnas digan
+       cerrado. Antes miraba solo Estado y devolvia «ok» sin escribir la
+       etapa: el reintento confirmaba el cierre al dispositivo y dejaba la
+       hoja a medias, que es como se perpetuaba el atasco. */
+    if(accion === 'CERRAR' && estadoCab === 'LISTO' && etapa === 'LISTO')
       return {ok:true, id:pid, etapa:'LISTO', revision:revision, idempotente:true};
-    if(etapa === 'LISTO' || ['LISTO','ENTREGADO'].indexOf(txt(cab.Estado).toUpperCase()) >= 0)
-      throw new Error(pid + ' ya esta cerrado. La preparacion no se puede modificar.');
+
+    /* QUIEN PUEDE TRABAJARSE: el pedido tiene que estar en una de las tres
+       secciones de preparacion (2 Organizar, 3 Despachar, 4 Finalizar), y la
+       seccion la decide la MISMA cascada que usa la pantalla. Antes esto se
+       decidia con dos condiciones propias que no coincidian con el carril. */
+    var sec = seccionDePedido_(cab, docDePedido_(pid));
+    if(sec === 0) throw new Error(pid + ' esta inhabilitado.');
+    if([2,3,4].indexOf(sec) < 0)
+      throw new Error(pid + ' ya esta cerrado: esta en ' + nombreSeccion_(sec) +
+        '. La preparacion no se puede modificar, pero ' +
+        (sec === 5 ? 'si se puede facturar.' : sec === 6 ? 'si se puede registrar la entrega.' : 'el pedido ya se entrego.'));
     if(numero(datos.revision) !== revision)
       throw new Error('CONFLICTO_REVISION: otro dispositivo cambio ' + pid + '. Actualiza antes de continuar; no se sobrescribio su trabajo.');
     var actualesTodas = filas(H.prepDet).filter(function(r){return txt(r.P_num) === pid;});
@@ -922,7 +1003,10 @@ function apiPreparacion_(pid, accion, datos, operador){
       f3['TSI_pedido_%']=partesListo.length?partesListo.reduce(function(sum,r){return sum+(txt(r.Surtido_inventario)==='S'?100:0);},0)/partesListo.length:0;
       f3.Listo_a_tiempo = txt(cab.Fecha_compromiso) && txt(cab.Fecha_compromiso) < marca.substr(0,10) ? 'N' : 'S';
     }else if(nuevaEtapa !== 'ORGANIZAR') f3.Estado = 'EN_PREPARACION';
-    escribirFila({hoja:H.pedidos,claves:[{columna:'P_num',valor:pid}],fila:f3});
+    /* v5.4 · BUG_004 · atomico: Estado y Etapa_preparacion viajan en la
+       MISMA escritura. Es la unica forma de que no puedan quedar
+       desalineados por un corte a mitad de camino. */
+    escribirFila({hoja:H.pedidos,atomico:true,claves:[{columna:'P_num',valor:pid}],fila:f3});
     var resultado={ok:true,id:pid,etapa:nuevaEtapa,revision:revision + 1,lineas:despues.length};
     preparacionGuardarComprobante_(pid,solicitud,accion,resultado,operador);
     return resultado;
@@ -930,8 +1014,19 @@ function apiPreparacion_(pid, accion, datos, operador){
 }
 
 function apiEditarFactura_(pid,datos,operador){
+  /* =====================================================================
+     v5.4 · BUG_005 · EL MOTIVO SE PIDE CUANDO CAMBIA UN PRECIO
+     =====================================================================
+     Antes se exigia para cualquier correccion, incluso para mover un
+     descuento. El usuario pidio que la pregunta aparezca «solo y unicamente
+     si el operador cambia el precio del producto».
+     La exigencia se traslada al sitio donde se sabe si un precio cambio de
+     verdad: dentro del recorrido de las lineas, comparando contra la hoja.
+     Lo que NO cambia es el registro: todo queda en LOG_Cambios, con motivo
+     escrito por el operador o con el motivo por omision del sistema. Se
+     quita la friccion, no la trazabilidad.
+     ===================================================================== */
   pid=txt(pid);datos=datos||{};var motivo=txt(datos.motivo);
-  if(!motivo)throw new Error('Explica el motivo de la corrección documental.');
   var lock=LockService.getScriptLock();lock.waitLock(30000);
   try{
     var p=buscarEn(filas(H.pedidos),'P_num',pid);if(!p)throw new Error('El pedido no existe.');
@@ -962,6 +1057,9 @@ function apiEditarFactura_(pid,datos,operador){
          de verdad hay que proteger: el producto sigue valiendo lo que vale
          para el siguiente pedido. */
       if(numero(l.Precio_unitario)!==precio){
+        /* v5.4 · BUG_005 · un PRECIO si exige explicacion del operador */
+        if(!motivo) throw new Error('Para cambiar el precio de ' + l.Referencia +
+          ' hay que explicar por qué. Un descuento no lo necesita; un precio sí.');
         logs.push({Tabla:'R2_Detalle',Registro:pid+' / '+l.Referencia,Campo:'Precio_unitario',
           Valor_antes:numero(l.Precio_unitario),Valor_despues:precio,
           Motivo:motivo+' · precio de ESTA venta; CAT_Productos no se modificó'});
@@ -970,7 +1068,7 @@ function apiEditarFactura_(pid,datos,operador){
       if(numero(l.Descuento_pct)!==desc){
         logs.push({Tabla:'R2_Detalle',Registro:pid+' / '+l.Referencia,Campo:'Descuento_pct',
           Valor_antes:numero(l.Descuento_pct),Valor_despues:desc,
-          Motivo:motivo+' · descuento de ESTA venta; CAT_Productos no se modificó'});
+          Motivo:(motivo||'Descuento aplicado al facturar')+' · descuento de ESTA venta; CAT_Productos no se modificó'});
         f.Descuento_pct=desc;cambios++;
       }
       if(Object.keys(f).length){
@@ -982,7 +1080,7 @@ function apiEditarFactura_(pid,datos,operador){
     });
     if(datos.descGlobal!==undefined&&numero(p.Descuento_global_pct)!==numero(datos.descGlobal)){
       var dg=numero(datos.descGlobal);if(!(dg>=0&&dg<=100))throw new Error('El descuento global debe estar entre 0 y 100.');
-      logs.push({Tabla:'R3_Pedidos',Registro:pid,Campo:'Descuento_global_pct',Valor_antes:numero(p.Descuento_global_pct),Valor_despues:dg,Motivo:motivo});
+      logs.push({Tabla:'R3_Pedidos',Registro:pid,Campo:'Descuento_global_pct',Valor_antes:numero(p.Descuento_global_pct),Valor_despues:dg,Motivo:(motivo||'Descuento global aplicado al facturar')});
       escribirFila({hoja:H.pedidos,claves:[{columna:'P_num',valor:pid}],fila:{Descuento_global_pct:dg}});cambios++;
     }
     if(!cambios)return {ok:true,cambios:0};
@@ -1664,7 +1762,7 @@ function cerrarHuecosMigracion(soloSimular){
 }
 
 /* ===================== PRUEBA Y DIAGNOSTICO ===================== */
-var VERSION_BACKEND = 'v5.3.1';
+var VERSION_BACKEND = 'v5.4';
 
 /**
  * Lee el archivo Index.html REAL del proyecto y dice si quedo bien pegado.
@@ -3470,7 +3568,19 @@ function estadoSeguro_(s,ligero){
      que la app fusionara un catalogo vacio y le borrara los productos al
      vendedor de mostrador. Solo se filtran si existen. */
   if(e.productos)e.productos=e.productos.map(function(p){var o={};Object.keys(p).forEach(function(k){if(['Costo','Costo_origen','Cuenta_ventas','Cuenta_inventario','Cuenta_costo_venta','Observacion_calidad'].indexOf(k)<0)o[k]=p[k];});return o;});
-  if(e.clientesFull)e.clientesFull=e.clientesFull.map(function(c){var o={};['Cliente_id','Cliente','Tipo_identificacion','Numero_identificacion','Digito_verificacion','Forma_pago','Medio_pago','Plazo_dias','Vendedor','Activo'].forEach(function(k){o[k]=c[k];});return o;});
+  /* =====================================================================
+     v5.4 · BUG_002 · EL CANAL FALTABA EN ESTA LISTA BLANCA
+     =====================================================================
+     Esta lista recorta las columnas de CAT_Clientes que ve un usuario de
+     MOSTRADOR. No incluia Canal_habitual, asi que para ese rol el canal
+     llegaba vacio y la aplicacion no podia preseleccionarlo: siempre tenia
+     que preguntarlo.
+     El canal NO es un dato sensible -- es justo lo que decide la lista de
+     precios que el vendedor necesita aplicar -- asi que entra. Lo que se
+     sigue recortando es el COSTO y las cuentas contables, que es lo que de
+     verdad no tiene que ver un vendedor de mostrador.
+     ===================================================================== */
+  if(e.clientesFull)e.clientesFull=e.clientesFull.map(function(c){var o={};['Cliente_id','Cliente','Canal_habitual','Lista_precios','Contacto','Tipo_identificacion','Numero_identificacion','Digito_verificacion','Forma_pago','Medio_pago','Plazo_dias','Vendedor','Activo'].forEach(function(k){o[k]=c[k];});return o;});
   return e;
 }
 function apiPing(token){sesionNativa_(token);return apiPing_();}
@@ -3694,7 +3804,7 @@ function apiAnalisisFinanciero(token){
 /** Ejecutar esta. Dice si los tres archivos quedaron bien pegados. */
 function heralsaVersion(){
   Logger.log('=========== VERSIONES ===========');
-  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.3.1');
+  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.4');
   Logger.log('Fase 2    : ' + VERSION_FASE2 + '      <- debe decir f2.2');
   var vIndex = null, largo = 0, cierra = false;
   try{
@@ -3702,7 +3812,7 @@ function heralsaVersion(){
     largo  = t.length;
     vIndex = (t.match(/VERSION_APP\s*=\s*'([^']+)'/) || [])[1] || null;
     cierra = t.replace(/\s+$/, '').slice(-7) === '</html>';
-    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.3.1');
+    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.4');
     Logger.log('Termina en </html>: ' + (cierra ? 'SI' : 'NO  *** QUEDO CORTADO AL PEGAR ***'));
     /* El tamano que devuelve getContent() NO coincide con el del archivo
        fuente: HtmlService no entrega el texto literal. Comparar tamanos aqui
@@ -3717,7 +3827,7 @@ function heralsaVersion(){
   }
   Logger.log('---------------------------------');
   if(vIndex === VERSION_BACKEND && cierra)
-    Logger.log('>>> TODO PAREJO EN v5.3.1. El codigo esta bien pegado.');
+    Logger.log('>>> TODO PAREJO EN v5.4. El codigo esta bien pegado.');
   else if(vIndex && vIndex !== VERSION_BACKEND)
     Logger.log('>>> NO COINCIDEN. Vuelva a pegar el archivo que se quedo atras.');
   else
@@ -3896,9 +4006,25 @@ function alegraLlamar_(ruta, metodo, cuerpo){
   var datos  = null;
   try{ datos = JSON.parse(texto); }catch(e){}
 
-  if(codigo === 401 || codigo === 403)
-    throw new Error('ALEGRA_NO_AUTORIZADO: el token no sirve, expiro, o le falta un permiso. ' +
-                    'Respuesta: ' + texto.substring(0,300));
+  /* =====================================================================
+     v5.4 · BUG_007 · «NO SE PUEDE CONSULTAR NI GENERAR: LA API CADUCO»
+     =====================================================================
+     El mensaje anterior metia tres causas distintas en una sola frase, y el
+     operador no sabia si tenia que renovar el token, pedir un permiso, o
+     llamar a alguien. Ahora se distinguen, porque la accion es distinta en
+     cada caso, y se dice EXACTAMENTE que hacer.
+     ===================================================================== */
+  if(codigo === 401 || codigo === 403){
+    var cuerpo = String(texto || '').toLowerCase();
+    var caducado = codigo === 401 || /expir|caduc|invalid token|token is invalid|jwt/.test(cuerpo);
+    if(caducado)
+      throw new Error('ALEGRA_TOKEN_VENCIDO: la clave de Alegra ya no sirve (caducó o fue revocada). ' +
+        'Hay que generar una nueva en Alegra y guardarla con heralsaAlegraGuardarToken(). ' +
+        'Ejecute heralsaAlegraRenovar() para ver el paso a paso. Respuesta de Alegra: ' +
+        texto.substring(0,200));
+    throw new Error('ALEGRA_FALTA_PERMISO: la clave sirve pero no tiene permiso para «' + ruta +
+      '». Hay que marcar ese permiso en Alegra al editar el token. Respuesta: ' + texto.substring(0,200));
+  }
   if(codigo >= 400)
     throw new Error('ALEGRA_ERROR_' + codigo + ': ' + texto.substring(0,500));
 
@@ -4446,7 +4572,22 @@ function cohPago_(d, contexto){
      cobrar. El medio se registra en el abono, no al emitir. Dejarlo en
      «Efectivo» dice que entro plata que no entro, y eso descuadra la caja
      y miente en el documento. */
-  if(esCredito && medio && medio.toUpperCase() !== 'CREDITO' && medio.toUpperCase() !== 'POR DEFINIR')
+  /* =====================================================================
+     v5.4 · BUG_008 · LA CONTRADICCION ENTRE MIS DOS PROPIAS GUARDAS
+     =====================================================================
+     Esta guarda exigia que a credito el medio fuera «Credito» o «Por
+     definir». Pero apiDocumento_ exige que el medio este en AL_MEDIO, la
+     lista literal de Alegra, que NO contiene ninguno de esos dos. Una
+     guarda pedia A y la otra prohibia A: por eso NINGUNA venta a credito se
+     podia emitir, que es el BUG_008 que reporto el usuario.
+
+     EL VALOR CORRECTO es «Instrumento no definido»: es el unico de la lista
+     de Alegra que significa exactamente «todavia no se sabe como se va a
+     pagar», que es la verdad de una venta a credito. Se aceptan tambien los
+     dos valores historicos para no invalidar documentos ya emitidos.
+     ===================================================================== */
+  var MEDIO_SIN_DEFINIR_ = ['INSTRUMENTO NO DEFINIDO', 'CREDITO', 'POR DEFINIR'];
+  if(esCredito && medio && MEDIO_SIN_DEFINIR_.indexOf(medio.toUpperCase()) < 0)
     errores.push('Incoherencia de pago: el documento es a CREDITO pero dice que se pagó con "' + medio +
       '". Si es a crédito todavía no se ha cobrado, así que no puede haber medio de pago. ' +
       'El medio se registra cuando entre el abono.');
@@ -4653,8 +4794,17 @@ apiDocumento_ = function(pid, tipo, operador, pago){
   var forma = txt(pago.forma) || 'Contado';
   var esCredito = forma.toUpperCase().indexOf('CRED') === 0;
 
-  /* si es a credito y no dicen medio, NO se inventa «Efectivo» */
-  if(esCredito && !txt(pago.medio)) pago.medio = 'Credito';
+  /* =====================================================================
+     v5.4 · BUG_008 · a credito el medio lo FIJA el servidor
+     =====================================================================
+     Antes: si no llegaba medio se ponia «Credito», que cohPago_ aceptaba y
+     AL_MEDIO rechazaba. Y si llegaba un medio concreto (porque el operador
+     lo habia escogido antes de cambiar a credito), el documento se rechazaba
+     por ilogico.
+     Ahora, a credito, el medio es «Instrumento no definido» SIEMPRE, venga
+     lo que venga del navegador. El servidor no confia en la pantalla para
+     una regla de negocio; la impone. */
+  if(esCredito) pago.medio = 'Instrumento no definido';
 
   /* v5.3 · RENDIMIENTO · un solo contexto para la validacion de pago, la
      del pedido y el recalculo de la factura. Antes esta envoltura leia R3 y
@@ -5515,7 +5665,26 @@ function apiMostradorCliente(token, numId){
                                                          : 'MINORISTA: precios de minorista') };
 }
 
-/** Mismo criterio que el frontend: M, MAY, MAYORISTA / R, MIN, MINORISTA. */
+/* =====================================================================
+   v5.4 · BUG_002 · LA REGLA DEL CANAL · UNA ESPECIFICACION, DOS COPIAS
+   =====================================================================
+   Esta funcion y canalDeTexto_ del Index son LA MISMA REGLA escrita dos
+   veces, y no se puede evitar: el navegador y Apps Script son dos tiempos
+   de ejecucion separados y no comparten modulos. Lo que si se puede evitar
+   es que se desincronicen sin que nadie lo note, asi que:
+
+     · LA ESPECIFICACION, que es la unica fuente de verdad:
+         vacio                      -> ''   (no se adivina: se PREGUNTA)
+         M · MAY* · MAYORISTA       -> 'M'
+         R · MIN* · DET*            -> 'R'
+         cualquier otra cosa        -> ''   (no se adivina)
+     · LA COLUMNA es CAT_Clientes.Canal_habitual, con Lista_precios como
+       respaldo historico. Ojo: existe otra columna llamada `Canal` en
+       R3_Pedidos y R4_Entregas, y NO es esta: esa es el canal con el que se
+       cerro un pedido concreto.
+     · SI SE CAMBIA AQUI hay que cambiar canalDeTexto_ en el Index, y
+       heralsaVerificarCanal() comprueba que las dos digan lo mismo.
+   ===================================================================== */
 function canalDeClienteTexto_(v){
   var t = txt(v).toUpperCase();
   if(!t) return '';
@@ -5999,6 +6168,31 @@ function heralsaRevisarLogica(){
       txt(l.Valor_antes) + ' -> ' + txt(l.Valor_despues) + ' · ' + txt(l.Operador));
   });
 
+  /* ---- 9 · v5.4 · BUG_004 · la cabecera no se contradice ---- */
+  Logger.log('');
+  Logger.log('--- 9 · CABECERA DEL PEDIDO · Estado contra Etapa (BUG_004) ---');
+  var contra = [];
+  peds.forEach(function(cab){
+    var pid = txt(cab.P_num);
+    if(!pid || txt(cab[COL_EST]).toUpperCase() === E_ANU) return;
+    var est = txt(cab.Estado).toUpperCase(), eta = txt(cab.Etapa_preparacion).toUpperCase();
+    var cerrado = (est === 'LISTO' || est === 'ENTREGADO');
+    var conocida = ['ORGANIZAR','DESPACHAR','FINALIZAR','LISTO'].indexOf(eta) >= 0;
+    var cual = (eta === 'LISTO' && !cerrado) ? 'C1 etapa cerrada con estado abierto'
+             : (cerrado && eta !== 'LISTO')  ? 'C2 estado cerrado con etapa abierta'
+             : !conocida                     ? 'C3 etapa vacia o desconocida'
+             : (eta === 'FINALIZAR' && !txt(cab.tc)) ? 'C4 etapa FINALIZAR sin inicio de despacho'
+             : '';
+    if(cual) contra.push(pid + ' · ' + est + ' / ' + (eta || '(vacia)') + ' · ' + cual);
+  });
+  if(contra.length){
+    F('hay ' + contra.length + ' cabecera(s) con Estado y Etapa_preparacion contradictorios. ' +
+      'Son las que pueden dejar un pedido visible en una seccion y rechazado por el servidor.');
+    contra.slice(0,10).forEach(function(t){ Logger.log('       ' + t); });
+    Logger.log('       Se sanean solas la proxima vez que se toque el pedido.');
+    Logger.log('       Para sanearlas todas ahora: heralsaRepararEtapas() simula, repararEtapas_(false) escribe.');
+  }else OK('ninguna cabecera se contradice: Estado y Etapa_preparacion van de acuerdo');
+
   /* ---- resumen ---- */
   Logger.log('');
   Logger.log('===== RESUMEN =====');
@@ -6155,4 +6349,398 @@ function apiMostradorTirilla(token, mnum){
     cliente:txt(v.Cliente), tipoId:txt(v.Tipo_identificacion), numId:txt(v.Numero_identificacion),
     canal:txt(v.Canal) || 'R', forma:txt(v.Forma_pago), medio:txt(v.Medio_pago),
     docTipo:txt(v.Doc_tipo), detalle:det, aviso:aviso };
+}
+
+
+/* ####################################################################
+   v5.4 · BUG_004 · LA AUTORIDAD UNICA DE LA SECCION
+   ####################################################################
+   EL DEFECTO, con nombre y apellido: la pregunta «¿en que seccion esta
+   este pedido?» estaba contestada en CINCO sitios distintos que no se
+   consultaban entre si.
+
+     1. h6SeccionDe_        (frontend) · la cascada buena
+     2. S.preSel            (frontend) · exigia que Etapa dijera literalmente
+                                         la etapa buscada
+     3. porFacturarHoy / S.enSel (frontend) · por Estado
+     4. h6EtapaReal_        (frontend) · derivada de los hechos
+     5. apiPreparacion_     (backend)  · Etapa con respaldo a DESPACHAR
+
+   Con Etapa_preparacion='LISTO' y Estado distinto de LISTO, la tarjeta del
+   carril contaba el pedido en Finalizar, la lista de Finalizar no lo
+   encontraba, y el servidor rechazaba TODA accion sobre el. El pedido
+   quedaba visible, contado y sin salida. Comprobado en produccion con
+   P-009 y P-020.
+
+   LO QUE SE HACE AQUI: una sola cascada, identica a la del frontend, mas
+   la derivacion del par (Estado, Etapa) a partir de los HECHOS, mas la
+   normalizacion que lo corrige cuando se contradice.
+
+   POR QUE NORMALIZAR Y NO SOLO VALIDAR: porque el usuario lo dijo claro --
+   «que un pedido genere conflictos o se atasque por decisiones del
+   operador no puede pasar, el sistema debe estar blindado». Validar avisa;
+   normalizar arregla. Un sistema infalible no es uno donde la escritura
+   nunca se corta: es uno que converge al estado correcto la proxima vez
+   que se le toca.
+   #################################################################### */
+
+/** Los nombres de las siete posiciones. Un solo sitio los escribe. */
+var SECCIONES_ = { 0:'Inhabilitados', 2:'2 Organizar', 3:'3 Despachar',
+                   4:'4 Finalizar', 5:'5 Facturacion', 6:'6 Entrega', 7:'Completados' };
+function nombreSeccion_(n){ return SECCIONES_[n] || ('seccion ' + n); }
+
+/* =====================================================================
+   LA CASCADA · exhaustiva y exclusiva, IDENTICA a h6SeccionDe_
+   =====================================================================
+   Devuelve SIEMPRE 0, 2, 3, 4, 5, 6 o 7. La ultima linea no tiene
+   condicion: nada puede quedar fuera. Si esta funcion y la del frontend
+   dejan de coincidir, heralsaRevisarLogica() lo detecta, porque las dos
+   cuentan sobre los mismos datos y la suma tiene que dar el total.
+   ===================================================================== */
+function seccionDePedido_(cab, tieneDoc){
+  if(!cab) return 0;
+  if(txt(cab[COL_EST]).toUpperCase() === E_ANU) return 0;
+  var est = txt(cab.Estado).toUpperCase();
+  var eta = txt(cab.Etapa_preparacion).toUpperCase();
+  if(est === 'ENTREGADO') return 7;
+  if(est === 'LISTO')     return tieneDoc ? 6 : 5;
+  if(tieneDoc)            return 6;
+  if(eta === 'FINALIZAR') return 4;
+  if(eta === 'DESPACHAR') return 3;
+  if(eta === 'LISTO')     return 4;
+  return 2;
+}
+
+/** ¿Tiene documento emitido? Una sola lectura de R4 por llamada. */
+function docDePedido_(pid, ctx){
+  var e = ctx && ctx.entPorNum ? ctx.entPorNum[txt(pid)]
+                               : buscarEn(filas(H.entregas), 'P_num', txt(pid));
+  return !!(e && txt(e.Doc_tipo));
+}
+
+/** La etapa que el servidor debe usar para trabajar, derivada y nunca vacia. */
+function etapaDeCabecera_(cab){
+  var eta = txt(cab && cab.Etapa_preparacion).toUpperCase();
+  if(['ORGANIZAR','DESPACHAR','FINALIZAR','LISTO'].indexOf(eta) >= 0) return eta;
+  /* una etapa vacia o desconocida NO se adivina con un respaldo fijo: se
+     deduce del hecho de si el despacho empezo. Antes el respaldo era
+     'DESPACHAR' siempre, y por eso un pedido con etapa vacia aceptaba
+     GUARDAR y rechazaba DESPACHAR con «ya salio de Organizar». */
+  return txt(cab && cab.tc) ? 'DESPACHAR' : 'ORGANIZAR';
+}
+
+/** La etapa que le corresponde a un Estado. Tabla de equivalencia, un sitio. */
+function etapaParaEstado_(estado){
+  var e = txt(estado).toUpperCase();
+  if(e === 'LISTO' || e === 'ENTREGADO') return 'LISTO';
+  if(e === 'NUEVO') return 'ORGANIZAR';
+  return '';     /* EN_PREPARACION admite DESPACHAR o FINALIZAR: no se fuerza */
+}
+
+/* =====================================================================
+   EL PAR COHERENTE · derivado de los HECHOS, no de lo que diga una celda
+   =====================================================================
+   Los hechos, en orden de autoridad:
+     te  (R4)              -> el cliente ya lo recibio
+     tl / Fecha_real_listo -> el pedido se cerro
+     Doc_tipo (R4)         -> se emitio documento, asi que estaba cerrado
+     tc                    -> el despacho empezo
+     lineas en R2_Detalle  -> hay algo que preparar
+
+   Un dato derivable no se cree: se calcula. Esta funcion NO escribe; solo
+   dice cual seria el par correcto y por que.
+   ===================================================================== */
+function cabeceraCoherente_(cab, partes, det, ent){
+  var estado = txt(cab.Estado).toUpperCase();
+  var etapa  = txt(cab.Etapa_preparacion).toUpperCase();
+  ent = ent || {};
+  var te  = !!txt(ent.te);
+  var doc = !!txt(ent.Doc_tipo);
+  var tl  = !!(txt(cab.Fecha_real_listo) || (partes || []).some(function(r){ return txt(r.tl); }));
+  var tc  = !!txt(cab.tc);
+  var vivas = (det || []).filter(function(r){ return txt(r[COL_EST]).toUpperCase() !== E_ANU; });
+  var hayLineas = vivas.length > 0;
+
+  var E, T, por;
+  if(te){                 E = 'ENTREGADO';      T = 'LISTO';      por = 'tiene fecha de entrega (te)'; }
+  else if(tl){            E = 'LISTO';          T = 'LISTO';      por = 'tiene fecha de cierre (tl)'; }
+  else if(doc){           E = 'LISTO';          T = 'LISTO';      por = 'ya tiene documento emitido'; }
+  else if(!hayLineas){    E = 'NUEVO';          T = 'ORGANIZAR';  por = 'no tiene lineas que preparar'; }
+  else if(!tc){
+    /* con lineas y sin iniciar el despacho, las dos etapas son legitimas:
+       ORGANIZAR (cargando) y DESPACHAR (enviado, sin iniciar). Se respeta
+       la guardada; cualquier otra cosa cae en ORGANIZAR. */
+    T = (etapa === 'DESPACHAR') ? 'DESPACHAR' : 'ORGANIZAR';
+    E = (T === 'ORGANIZAR') ? 'NUEVO' : 'EN_PREPARACION';
+    por = 'tiene lineas y no ha iniciado el despacho (no hay tc)';
+  }else{
+    /* iniciado y sin cerrar: DESPACHAR o FINALIZAR, se respeta la guardada */
+    T = (etapa === 'FINALIZAR') ? 'FINALIZAR' : 'DESPACHAR';
+    E = 'EN_PREPARACION';
+    por = 'el despacho esta iniciado (tc) y no se ha cerrado';
+  }
+  return { estado:E, etapa:T, porque:por,
+           coincide:(estado === E && etapa === T) };
+}
+
+/* =====================================================================
+   LA NORMALIZACION · solo actua cuando hay CONTRADICCION
+   =====================================================================
+   Deliberadamente conservadora. No reescribe una cabecera que ya se puede
+   clasificar sin ambiguedad: solo las cuatro contradicciones reales que
+   dejan un pedido sin salida o en dos sitios a la vez.
+
+     C1  Etapa LISTO y Estado abierto      -> el atasco total de P-020
+     C2  Estado cerrado y Etapa abierta    -> el pedido en dos secciones
+     C3  Etapa vacia o desconocida         -> clasificado por respaldo fijo
+     C4  Etapa FINALIZAR sin tc            -> no pudo cerrar lo que no abrio
+
+   Todo cambio queda en LOG_Cambios con el hecho que lo justifico, asi que
+   es auditable y reversible. Si no hay contradiccion, no escribe nada y
+   devuelve cambio:false.
+   ===================================================================== */
+function normalizarCabecera_(pid, cab, operador, motivo){
+  pid = txt(pid);
+  if(!cab) return { cambio:false };
+  if(txt(cab[COL_EST]).toUpperCase() === E_ANU) return { cambio:false, cab:cab };
+
+  var estado = txt(cab.Estado).toUpperCase();
+  var etapa  = txt(cab.Etapa_preparacion).toUpperCase();
+  var cerrado = (estado === 'LISTO' || estado === 'ENTREGADO');
+  var etapaConocida = ['ORGANIZAR','DESPACHAR','FINALIZAR','LISTO'].indexOf(etapa) >= 0;
+
+  var C1 = (etapa === 'LISTO' && !cerrado);
+  var C2 = (cerrado && etapa !== 'LISTO');
+  var C3 = !etapaConocida;
+  var C4 = (etapa === 'FINALIZAR' && !txt(cab.tc));
+  if(!C1 && !C2 && !C3 && !C4) return { cambio:false, cab:cab };
+
+  var partes = filas(H.prep).filter(function(r){ return txt(r.P_num) === pid; });
+  var det    = filas(H.prepDet).filter(function(r){ return txt(r.P_num) === pid; });
+  var ent    = buscarEn(filas(H.entregas), 'P_num', pid) || {};
+  var c = cabeceraCoherente_(cab, partes, det, ent);
+  if(c.coincide) return { cambio:false, cab:cab };
+
+  var cual = C1 ? 'C1 etapa cerrada con estado abierto'
+           : C2 ? 'C2 estado cerrado con etapa abierta'
+           : C3 ? 'C3 etapa vacia o desconocida'
+                : 'C4 etapa FINALIZAR sin inicio de despacho';
+
+  var logs = [], f = { P_num:pid };
+  if(estado !== c.estado){
+    logs.push({ Tabla:H.pedidos, Registro:pid, Campo:'Estado',
+      Valor_antes:txt(cab.Estado), Valor_despues:c.estado,
+      Motivo:'Saneado automatico (' + cual + ') porque ' + c.porque + ' · ' + txt(motivo) });
+    f.Estado = c.estado;
+  }
+  if(etapa !== c.etapa){
+    logs.push({ Tabla:H.pedidos, Registro:pid, Campo:'Etapa_preparacion',
+      Valor_antes:txt(cab.Etapa_preparacion), Valor_despues:c.etapa,
+      Motivo:'Saneado automatico (' + cual + ') porque ' + c.porque + ' · ' + txt(motivo) });
+    f.Etapa_preparacion = c.etapa;
+  }
+  if(!logs.length) return { cambio:false, cab:cab };
+
+  /* atomico: las dos columnas del par, en una sola escritura */
+  escribirFila({ hoja:H.pedidos, atomico:true, noSello:true,
+                 claves:[{ columna:'P_num', valor:pid }], fila:f });
+  try{ apiLogCambio_(logs, operador || 'sistema'); }catch(e){}
+
+  var nuevo = {};
+  Object.keys(cab).forEach(function(k){ nuevo[k] = cab[k]; });
+  nuevo.Estado = c.estado;
+  nuevo.Etapa_preparacion = c.etapa;
+  return { cambio:true, cab:nuevo, contradiccion:cual, porque:c.porque,
+           antes:{ estado:estado, etapa:etapa }, despues:{ estado:c.estado, etapa:c.etapa } };
+}
+
+/** Lo que la app necesita saber de una cabecera, en un solo objeto. */
+function apiSeccionPedido(token, pid){
+  sesionNativa_(token);
+  var cab = buscarEn(filas(H.pedidos), 'P_num', txt(pid));
+  if(!cab) return { ok:false, error:'El pedido ' + txt(pid) + ' no existe.' };
+  var doc = docDePedido_(pid);
+  var sec = seccionDePedido_(cab, doc);
+  return { ok:true, pedido:txt(pid), seccion:sec, nombre:nombreSeccion_(sec),
+           estado:txt(cab.Estado), etapa:etapaDeCabecera_(cab), documento:doc };
+}
+
+
+/* =====================================================================
+   REPARACION EN LOTE · por omision SIMULA
+   =====================================================================
+   Recorre todas las cabeceras y normaliza las que se contradigan. Igual
+   que las otras reparaciones de este archivo: ejecutada desde el editor
+   sin argumentos SOLO SIMULA, y para escribir hay que llamarla a
+   proposito con false.
+   ===================================================================== */
+function heralsaRepararEtapas(){ return repararEtapas_(true); }
+function repararEtapas_(soloSimular){
+  if(soloSimular === undefined) soloSimular = true;
+  Logger.log(soloSimular ? '===== SIMULACION · saneo de cabeceras · NO escribe ====='
+                         : '===== SANEO DE CABECERAS · ESCRIBE =====');
+  var peds = filas(H.pedidos);
+  var ents = indicePor_(filas(H.entregas), 'P_num');
+  var partes = agrupaPor_(filas(H.prep), 'P_num');
+  var dets = agrupaPor_(filas(H.prepDet), 'P_num');
+  var tocar = [], ok = 0;
+
+  peds.forEach(function(cab){
+    var pid = txt(cab.P_num);
+    if(!pid) return;
+    if(txt(cab[COL_EST]).toUpperCase() === E_ANU) return;
+    var estado = txt(cab.Estado).toUpperCase(), etapa = txt(cab.Etapa_preparacion).toUpperCase();
+    var cerrado = (estado === 'LISTO' || estado === 'ENTREGADO');
+    var conocida = ['ORGANIZAR','DESPACHAR','FINALIZAR','LISTO'].indexOf(etapa) >= 0;
+    var hay = (etapa === 'LISTO' && !cerrado) || (cerrado && etapa !== 'LISTO')
+           || !conocida || (etapa === 'FINALIZAR' && !txt(cab.tc));
+    if(!hay){ ok++; return; }
+    var c = cabeceraCoherente_(cab, partes[pid] || [], dets[pid] || [], ents[pid] || {});
+    if(c.coincide){ ok++; return; }
+    tocar.push({ pid:pid, antes:estado + ' / ' + (etapa || '(vacia)'),
+                 despues:c.estado + ' / ' + c.etapa, porque:c.porque,
+                 seccionAntes:seccionDePedido_(cab, !!txt((ents[pid]||{}).Doc_tipo)) });
+  });
+
+  Logger.log('Cabeceras coherentes          : ' + ok);
+  Logger.log('Cabeceras que se contradicen  : ' + tocar.length);
+  tocar.forEach(function(t){
+    Logger.log('  ' + t.pid + ' · ' + t.antes + '  ->  ' + t.despues +
+      '   (estaba en ' + nombreSeccion_(t.seccionAntes) + '; ' + t.porque + ')');
+  });
+  if(!tocar.length){ Logger.log('Nada que sanear. Ninguna cabecera se contradice.'); return { ok:true, tocadas:0 }; }
+  if(soloSimular){
+    Logger.log('');
+    Logger.log('=== FIN DE LA SIMULACION · no se escribio nada ===');
+    Logger.log('Para aplicarlo de verdad ejecute en el editor:  repararEtapas_(false)');
+    return { ok:true, simulado:true, tocadas:tocar.length, detalle:tocar };
+  }
+  var hechas = 0;
+  tocar.forEach(function(t){
+    var cab = buscarEn(filas(H.pedidos), 'P_num', t.pid);
+    var r = normalizarCabecera_(t.pid, cab, 'sistema', 'Saneo en lote heralsaRepararEtapas');
+    if(r.cambio) hechas++;
+  });
+  Logger.log('');
+  Logger.log('=== SANEO TERMINADO · ' + hechas + ' cabecera(s) corregida(s) ===');
+  Logger.log('Cada cambio quedo en LOG_Cambios con el hecho que lo justifico.');
+  return { ok:true, tocadas:hechas };
+}
+
+
+/* ####################################################################
+   v5.4 · BUG_007 · RENOVAR LA CLAVE DE ALEGRA · paso a paso
+   ####################################################################
+   La clave de prueba de Alegra caduca. Esto no es un defecto del codigo:
+   es una decision de Alegra. Lo que si era un defecto es que la aplicacion
+   no lo dijera con claridad y que no hubiera un procedimiento escrito.
+
+   Esta funcion NO llama a Alegra ni cambia nada: imprime el procedimiento y
+   dice en que estado esta el token que hay guardado. Es de solo lectura.
+   #################################################################### */
+function heralsaAlegraRenovar(){
+  Logger.log('========== RENOVAR LA CLAVE DE ALEGRA ==========');
+  var jwt = PropertiesService.getScriptProperties().getProperty('ALEGRA_JWT') || '';
+  Logger.log('');
+  Logger.log('--- ESTADO DE LA CLAVE QUE HAY GUARDADA ---');
+  if(!jwt){
+    Logger.log('NO hay ninguna clave guardada.');
+  }else{
+    Logger.log('Hay una clave guardada de ' + jwt.length + ' caracteres.');
+    /* Un JWT lleva su fecha de expiracion DENTRO, en el campo exp del
+       segundo bloque. Se lee sin llamar a Alegra y sin exponer la clave. */
+    try{
+      var partes = jwt.split('.');
+      if(partes.length >= 2){
+        var b64 = partes[1].replace(/-/g,'+').replace(/_/g,'/');
+        while(b64.length % 4) b64 += '=';
+        var cuerpo = JSON.parse(Utilities.newBlob(Utilities.base64Decode(b64)).getDataAsString());
+        if(cuerpo.exp){
+          var vence = new Date(Number(cuerpo.exp) * 1000);
+          var dias = Math.floor((vence.getTime() - new Date().getTime()) / 86400000);
+          Logger.log('Vence el : ' + Utilities.formatDate(vence, tzLibro_(), 'yyyy-MM-dd HH:mm'));
+          Logger.log(dias >= 0 ? 'Le quedan ' + dias + ' dia(s).'
+                               : '>>> VENCIDA hace ' + Math.abs(dias) + ' dia(s). Hay que renovarla.');
+        }else Logger.log('La clave no declara fecha de vencimiento.');
+      }
+    }catch(e){ Logger.log('No se pudo leer la fecha de vencimiento de la clave: ' + e.message); }
+  }
+
+  Logger.log('');
+  Logger.log('--- PASO A PASO PARA RENOVARLA ---');
+  Logger.log('1. Entre a Alegra con su cuenta.');
+  Logger.log('2. Arriba a la derecha, su nombre -> Configuracion.');
+  Logger.log('3. Busque «Integraciones» o «API» -> «Tokens» / «Claves de API».');
+  Logger.log('4. Cree un token NUEVO. Donde pregunte para que es, escoja «Otro».');
+  Logger.log('5. MARQUE SOLO ESTOS TRES PERMISOS:');
+  Logger.log('      · Facturas   (leer y crear)');
+  Logger.log('      · Contactos  (leer y crear)');
+  Logger.log('      · Items      (leer)');
+  Logger.log('   NO marque «Configuraciones generales»: no hace falta y da acceso de mas.');
+  Logger.log('6. Copie el token completo. Empieza por «eyJ» y son unos 1.600 caracteres.');
+  Logger.log('7. En este editor, abra la funcion heralsaAlegraGuardarToken, pegue el');
+  Logger.log('   token donde dice PEGUE_AQUI, ejecutela, y BORRE el token del codigo.');
+  Logger.log('8. Ejecute heralsaAlegraProbar2() para comprobar los permisos.');
+  Logger.log('9. Si da 4/4, ya se puede facturar.');
+  Logger.log('');
+  Logger.log('AVISO IMPORTANTE: el token NO se guarda en el codigo ni en el repositorio.');
+  Logger.log('Vive en Propiedades del script, que no se comparte. Si alguna vez queda');
+  Logger.log('pegado dentro de Codigo.gs, borrelo: con esa clave cualquiera puede emitir');
+  Logger.log('facturas a nombre de HERALSA.');
+  return { ok:true, hayClave:!!jwt, largo:jwt.length };
+}
+
+
+/* ####################################################################
+   v5.4 · BUG_002 · LAS DOS COPIAS DE LA REGLA DEL CANAL DICEN LO MISMO
+   ####################################################################
+   canalDeClienteTexto_ (aqui) y canalDeTexto_ (en el Index) son la misma
+   regla en dos tiempos de ejecucion distintos. No se pueden fundir en una
+   funcion, pero SI se puede comprobar que no se hayan desincronizado.
+
+   Esta funcion prueba las dos con los mismos casos. La del Index se lee del
+   propio archivo HTML y se evalua, asi que lo que se comprueba es el codigo
+   que de verdad se sirve, no una copia.
+   #################################################################### */
+function heralsaVerificarCanal(){
+  Logger.log('===== v5.4 · LA REGLA DEL CANAL · solo lectura =====');
+  var casos = [
+    ['', ''], ['   ', ''],
+    ['M','M'], ['m','M'], ['MAY','M'], ['Mayorista','M'], ['MAYORISTA','M'],
+    ['R','R'], ['r','R'], ['MIN','R'], ['Minorista','R'], ['DETAL','R'],
+    ['X',''], ['MOSTRADOR',''], ['1',''], ['MY','']
+  ];
+  var fallos = 0;
+  Logger.log('');
+  Logger.log('--- BACKEND · canalDeClienteTexto_ ---');
+  casos.forEach(function(c){
+    var r = canalDeClienteTexto_(c[0]);
+    var ok = (r === c[1]);
+    if(!ok) fallos++;
+    Logger.log((ok ? 'OK    ' : 'FALLO ') + '«' + c[0] + '» -> «' + r + '»' + (ok ? '' : ' (esperado «' + c[1] + '»)'));
+  });
+
+  /* ---- y la del Index, leida del archivo que se sirve ---- */
+  Logger.log('');
+  Logger.log('--- FRONTEND · canalDeTexto_ del Index ---');
+  try{
+    var html = HtmlService.createHtmlOutputFromFile('Index').getContent();
+    var m = html.match(/function canalDeTexto_\(v\)\{[\s\S]*?\n\}/);
+    if(!m){ Logger.log('FALLO no se encontro canalDeTexto_ en el Index.'); fallos++; }
+    else{
+      var fn = eval('(' + m[0].replace('function canalDeTexto_', 'function') + ')');
+      casos.forEach(function(c){
+        var r = fn(c[0]);
+        var ok = (r === c[1]);
+        if(!ok) fallos++;
+        Logger.log((ok ? 'OK    ' : 'FALLO ') + '«' + c[0] + '» -> «' + r + '»' + (ok ? '' : ' (esperado «' + c[1] + '»)'));
+      });
+    }
+  }catch(e){ Logger.log('No se pudo comprobar la del Index: ' + e.message); fallos++; }
+
+  Logger.log('');
+  Logger.log(fallos ? '>>> ' + fallos + ' FALLO(S): las dos copias de la regla NO dicen lo mismo.'
+                    : '>>> Las dos copias de la regla del canal coinciden en los ' + casos.length + ' casos.');
+  Logger.log('No se escribio nada.');
+  return { ok:fallos === 0, fallos:fallos, casos:casos.length };
 }

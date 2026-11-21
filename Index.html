@@ -1397,7 +1397,7 @@ button,.modulo,.modulos-apoyo button,.fin-nav button{-webkit-tap-highlight-color
    Prototipo funcional de una sola página. Estado en localStorage.
    Cada objeto mapea 1:1 a una fila de las hojas R1..R4 de Google Sheets.
    ============================================================ */
-var VERSION_APP = 'v5.3.1';   /* <- lo lee verificarIndex() en el servidor. NO borrar esta línea. */
+var VERSION_APP = 'v5.4';   /* <- lo lee verificarIndex() en el servidor. NO borrar esta línea. */
 var KEY = 'heralsa.v5';   /* v5: la hoja es la única fuente de verdad. Al subir de versión cada celular bota su copia vieja y vuelve a leer la hoja. */
 var OPS = ['Hernando', 'Deyana'];
 var META = { i1:5, i2:90, i3:2, i7:95, i10:90 };
@@ -2770,13 +2770,82 @@ S.np1 = function(){
   var b = combo({ cat:'clientes', ph:'Buscar cliente', onPick:'A.npCli', val:W.cliente, lab:'Cliente' });
   return { title:'Pedido nuevo', sub:pasos(1,4) + ' · ¿de quién es?', body:'<h1 class="q">¿Quién hizo el pedido?</h1><p class="sub">El número P-### lo pone el sistema al final.</p>' + b,
     foot: W.cliente ? '<button class="btn pri" onclick="go(\'np2\')">Continuar</button>' : '' };
+  /* el canal se resuelve en np2, que ya lo trae preseleccionado si la hoja
+     lo tiene: no se salta el paso, se confirma de un toque. */
 };
+/* =====================================================================
+   v5.4 · BUG_002 · EL CANAL DEL CLIENTE YA ESTABA LEIDO Y NO SE USABA
+   =====================================================================
+   A.npCli SI preseleccionaba el canal desde CAT_Clientes.Canal_habitual...
+   pero esta pantalla NUNCA leia W.canal y A.npCanal lo sobreescribia. La
+   preseleccion era codigo muerto: pasara lo que pasara, el operador veia la
+   misma pregunta en blanco y tenia que volver a declarar el canal de un
+   cliente que la hoja ya tenia clasificado.
+
+   LO QUE PIDIO EL USUARIO, y es lo que hace ahora:
+     · si el cliente YA tiene canal      -> se MUESTRA, con Confirmar o Editar
+     · si NO lo tiene                    -> se pregunta
+     · al escoger uno distinto al de la hoja -> se pregunta si se le guarda
+       al cliente, y solo se escribe en CAT_Clientes si se dice que si
+     · EDITAR lo pueden hacer ADMIN y OPERACION (Crstian, Hernando y Deyana);
+       un vendedor de mostrador solo puede Confirmar lo que dice la hoja.
+
+   NO SE TOCA NADA MAS de la seccion 1: la fecha de solicitud, la de
+   compromiso y el resumen quedan como estaban, que es lo que pidio.
+   ===================================================================== */
+function npPuedeEditarCanal_(){ return esRol('ADMIN') || esRol('OPERACION'); }
+function npCanalDeHoja_(){ return String((fiscalDe(W.cliente) || {}).canal || '').toUpperCase(); }
+function npNombreCanal_(c){ return c === 'M' ? 'M · Mayorista' : c === 'R' ? 'R · Minorista' : ''; }
+
 S.np2 = function(){
-  var b = '<h1 class="q">¿Qué canal?</h1><p class="sub">Cliente: ' + esc(W.cliente) + '.</p>'
-    + noteBox('Mayorista o minorista. Los dos canales se analizan por separado, por eso es obligatorio.')
-    + optBtn("A.npCanal('M')", 'box', '', 'M · Mayorista', 'Cliente que revende')
-    + optBtn("A.npCanal('R')", 'tag', '', 'R · Minorista', 'Consumidor final o taller');
-  return { title:'Pedido nuevo', sub:pasos(2,4) + ' · canal', body:b };
+  var enHoja = npCanalDeHoja_();
+  var sel = String(W.canal || '').toUpperCase();
+  var b = '<h1 class="q">¿Qué canal?</h1><p class="sub">Cliente: ' + esc(W.cliente) + '.</p>';
+
+  /* ---- paso A · el cliente ya tiene canal y no se esta editando ---- */
+  if(enHoja && !W.npEdit && (!sel || sel === enHoja)){
+    W.canal = enHoja;
+    b += '<div class="h6chk ok"><span class="mk2">✓</span><div>'
+      + 'La hoja dice que <b>' + esc(W.cliente) + '</b> es <b>' + npNombreCanal_(enHoja) + '</b>.<br>'
+      + 'Se van a usar los <b>precios de ' + (enHoja === 'M' ? 'mayorista' : 'minorista') + '</b>.'
+      + '</div></div>';
+    b += noteBox('Viene de <b>CAT_Clientes · Canal_habitual</b>. Si está bien, confirme y siga: '
+      + 'no hay que volver a escogerlo en cada pedido.');
+    if(npPuedeEditarCanal_())
+      b += '<div style="margin-top:10px"><button class="btn gho" onclick="A.npCanalEditar()">'
+        + '<svg class="i sm"><use href="#i-pencil"/></svg> Este cliente cambió de canal</button></div>';
+    else
+      b += '<p class="hint">Si el canal está equivocado, avise a Crstian, Hernando o Deyana: '
+        + 'cambiarlo es decisión de ellos.</p>';
+    return { title:'Pedido nuevo', sub:pasos(2,4) + ' · canal', body:b,
+      foot:'<button class="btn pri" onclick="go(\'np3\')">Confirmar ' + npNombreCanal_(enHoja) + ' y continuar</button>' };
+  }
+
+  /* ---- paso C · se escogio uno distinto al de la hoja: ¿se le guarda? ---- */
+  if(sel && enHoja && sel !== enHoja && W.npGuardarCanal === undefined){
+    b += warnBox('Este pedido va con <b>' + npNombreCanal_(sel) + '</b>, pero la hoja dice que '
+      + esc(W.cliente) + ' es <b>' + npNombreCanal_(enHoja) + '</b>.');
+    b += '<div class="sec">¿Qué se hace con el cliente?</div>'
+      + optBtn("A.npCanalGuardar(true)", 'check', '',
+          'Cambiarle el canal al cliente',
+          'Queda ' + npNombreCanal_(sel) + ' en CAT_Clientes para los próximos pedidos. Queda registrado quién lo cambió.')
+      + optBtn("A.npCanalGuardar(false)", 'file', '',
+          'Solo para este pedido',
+          'El cliente sigue siendo ' + npNombreCanal_(enHoja) + ' en la hoja.');
+    return { title:'Pedido nuevo', sub:pasos(2,4) + ' · canal', body:b };
+  }
+
+  /* ---- paso B · no hay canal en la hoja, o se pulso Editar ---- */
+  if(enHoja && W.npEdit)
+    b += noteBox('La hoja dice <b>' + npNombreCanal_(enHoja) + '</b>. Escoja el canal de este pedido; '
+      + 'después se le pregunta si se le cambia al cliente.');
+  else
+    b += noteBox('Este cliente <b>no tiene canal</b> en CAT_Clientes, así que hay que indicarlo. '
+      + 'Los dos canales se analizan por separado, por eso es obligatorio.');
+  b += optBtn("A.npCanal('M')", 'box', (sel === 'M' ? 'si' : ''), 'M · Mayorista', 'Cliente que revende')
+    + optBtn("A.npCanal('R')", 'tag', (sel === 'R' ? 'si' : ''), 'R · Minorista', 'Consumidor final o taller');
+  return { title:'Pedido nuevo', sub:pasos(2,4) + ' · canal', body:b,
+    foot: sel ? '<button class="btn pri" onclick="A.npCanalSeguir()">Continuar con ' + npNombreCanal_(sel) + '</button>' : '' };
 };
 S.np3 = function(){
   var opts = [['Hoy',0],['Ayer',-1],['Antier',-2],['Hace 3 días',-3]];
@@ -3730,9 +3799,40 @@ function vaciarCola(cb){
 }
 
 /* ---- la hoja es la única fuente de verdad: primero sube, después relee ---- */
+/* =====================================================================
+   v5.4 · BUG_001 · «EL CLIENTE NUEVO NO APARECE EN LA BARRA DE BUSQUEDA»
+   =====================================================================
+   LA CAUSA, trazada paso a paso:
+     1. el alta del cliente SI pedia una resincronizacion completa
+     2. pero esta funcion DESCARTABA la peticion -- `return` sin mas -- si ya
+        habia otra lectura en vuelo, y el ciclo de 30 s esta leyendo todo el
+        tiempo. La peticion se perdia en silencio, sin cola ni reintento.
+     3. como go() y tab() no sincronizan, los unicos disparadores que
+        quedaban eran los tres LIGEROS, y el estado ligero NO trae los
+        catalogos: la lista vieja se conservaba indefinidamente.
+     4. de ahi «hay que recargar la pagina multiples veces»: recargar era la
+        unica via fiable, y a veces tampoco, porque al entrar puede haber
+        otra lectura en curso.
+
+   AHORA no se descarta: se RECUERDA y se relanza al terminar. Y si lo que
+   estaba en vuelo era ligero y entra una peticion completa, gana la
+   completa. Un solo cambio aqui arregla las tres rutas de alta.
+   ===================================================================== */
+var SYNC_PEND_ = null;      /* null = nada pendiente · true/false = silencioso */
+function reanudarSync_(){
+  if(SYNC_PEND_ === null) return;
+  var s = SYNC_PEND_;
+  SYNC_PEND_ = null;
+  setTimeout(function(){ sincronizar(s); }, 60);
+}
+
 function sincronizar(silencioso){
   if(!ONLINE){ if(!silencioso)render(); return; }
-  if(SYNC.estado==='leyendo'||SYNC.estado==='enviando')return;
+  if(SYNC.estado==='leyendo'||SYNC.estado==='enviando'){
+    if(SYNC_PEND_ === null) SYNC_PEND_ = !!silencioso;
+    else if(!silencioso)    SYNC_PEND_ = false;   /* el completo gana al ligero */
+    return;
+  }
   if((DB.colaPre && DB.colaPre.length) || (DB.cola && DB.cola.length) || (DB.colaMov && DB.colaMov.length)){ vaciarCola(sincronizar); return; }
   SYNC.estado = 'leyendo'; pintarSync();
   /* =====================================================================
@@ -3752,10 +3852,15 @@ function sincronizar(silencioso){
     var av = hidratar(e);
     SYNC.estado = 'listo';
     if(cur.n !== 'oper' && !DB.operador) cur = { n:'oper', c:{} };
-    var escribiendo=silencioso&&document.activeElement&&/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName||'');
+    /* v5.4 · BUG_003 · la bandera ya no depende de `silencioso` ni del tipo
+       de elemento enfocado: si hay trabajo a medio capturar, no se repinta
+       y no se salta a otra pantalla. */
+    var escribiendo = editandoAhora_();
     if(!escribiendo&&W&&W.pre&&W.pid){var pr=pedido(W.pid);if(pr&&Number(pr.revision||1)!==Number(W.revision||1)){toast('Este pedido cambió en otro dispositivo; se actualizó sin borrar ese trabajo.');A.preStart(W.pid,pr.etapa);return;}}
-    if(!escribiendo)render();
+    if(!escribiendo) render();
+    else if(!silencioso) toast('Datos actualizados. No se repintó la pantalla para no perder lo que está escribiendo.');
     if(av.length) toast(av.length + ' dato(s) de la hoja necesitan revisión');
+    reanudarSync_();
   }, function(err){
     SYNC.estado = 'pendiente';
     var msg = (err && err.message ? err.message : String(err));
@@ -3767,9 +3872,48 @@ function sincronizar(silencioso){
       cur = { n:'clave', c:{} }; render(); return;
     }
     DB.avisos = ['No se pudo leer la hoja: ' + msg + '. Toca «Actualizar» cuando tengas señal.'];
-    render();
+    if(!editandoAhora_()) render();
+    reanudarSync_();
   });
 }
+/* =====================================================================
+   v5.4 · BUG_003 · «AL ESCRIBIR LA CANTIDAD, LA PANTALLA SACA AL OPERADOR»
+   =====================================================================
+   LO QUE PASABA, trazado: la cantidad de un producto nuevo vive SOLO en
+   W.nuevo hasta que se pulsa Guardar. El ciclo de fondo de 30 s llamaba a
+   A.preStart, que reasignaba W completo y navegaba: el producto en edicion
+   desaparecia y el operador volvia a la lista.
+
+   LA GUARDA QUE DEBIA EVITARLO tenia tres agujeros, y los tres se dan en
+   el uso normal:
+     1. miraba document.activeElement.tagName, asi que NO protegia cuando el
+        operador usa los botones − / + (el foco esta en un BUTTON), ni
+        despues de cerrar el teclado del movil (el foco vuelve a BODY), que
+        es exactamente cuando se dispara el evento `focus`.
+     2. empezaba por `silencioso &&`, asi que cualquier sincronizacion no
+        silenciosa la desactivaba entera. Y vaciarCola llamaba
+        sincronizar() SIN argumento en tres sitios.
+     3. no cubria otras ediciones en curso: un alta de catalogo a medias o
+        una correccion de precios tambien se perdian.
+
+   AHORA se pregunta por el ESTADO DEL TRABAJO, no por el elemento con
+   foco: si hay algo a medio capturar, nada repinta. Es el mismo criterio
+   que ya usan facSync(origen) e invSync(escribiendo) en este archivo.
+   ===================================================================== */
+function editandoAhora_(){
+  if(W){
+    if(W.nuevo)     return true;   /* producto a medio cargar en Organizar */
+    if(W.val)       return true;   /* validacion de una linea en curso */
+    if(W.cierre)    return true;   /* cierre de Finalizar en curso */
+    if(W.h6alta)    return true;   /* alta de catalogo a medias */
+    if(W.fedit)     return true;   /* corrigiendo precios de la factura */
+    if(W.guardando) return true;   /* hay una escritura en vuelo */
+    if(W.mosEspAbierto) return true;   /* empaque especial a medio llenar */
+  }
+  var el = document.activeElement;
+  return !!(el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName || ''));
+}
+
 function cargarCatalogos(){ sincronizar(); }   /* compatibilidad */
 function pintarSync(){ if(cur.n === 'home') render(); }
 function bannerSync(){
@@ -3899,16 +4043,43 @@ A.addCat = function(name){
   }
   var yaEsta = (DB[cat] || []).filter(function(x){ return x.toLowerCase() === low; })[0];
   if(yaEsta){ toast('«' + yaEsta + '» ya estaba en el catálogo'); A[f](yaEsta); return; }
+  /* =====================================================================
+     v5.4 · BUG_001 · ESTA ERA LA RUTA QUE NO RESINCRONIZABA NUNCA
+     =====================================================================
+     El tercer argumento de srv() era literalmente `null`: no habia callback
+     de exito, asi que despues de escribir en la hoja no se volvia a leer y
+     el cliente nuevo vivia SOLO en este dispositivo. En otro celular no
+     existia, y aqui desaparecia en cuanto llegaba el primer estado
+     completo, porque hidratar() reemplaza la lista con la de la hoja.
+     Peor: si la hoja RECHAZABA el alta, el aviso salia pero la entrada
+     local se quedaba guardada. Un cliente fantasma con el que se podia
+     crear un pedido que despues no cuadraba con nada.
+
+     AHORA: se agrega en memoria para no bloquear al operador, se escribe en
+     la hoja, y al confirmar se RESINCRONIZA completo (que ya no se puede
+     perder, ver sincronizar). Si la hoja lo rechaza, se RETIRA la entrada
+     local y se dice por que: no se deja un dato que la hoja no acepto.
+     ===================================================================== */
   DB[cat].push(n);
   DB[cat].sort(function(a, b){ return a.localeCompare(b, 'es'); });
   save();
   var mapa = { clientes:'clientes', proveedores:'proveedores', refs:'productos', mp:'materias' };
   if(ONLINE && mapa[cat]){
-    srv('apiAgregarCatalogo', [mapa[cat], n], null, function(e){
-      toast('Quedó en este celular, pero la hoja lo rechazó: ' + (e && e.message ? e.message : e));
+    srv('apiAgregarCatalogo', [mapa[cat], n], function(r){
+      if(r && r.nuevo === false) toast('«' + (r.valor || n) + '» ya estaba en el catálogo de la hoja.');
+      else toast('«' + n + '» quedó en el catálogo de la hoja.');
+      sincronizar();              /* para que aparezca en TODOS los buscadores */
+    }, function(e){
+      /* la hoja manda: si no lo acepto, no puede quedar en el dispositivo */
+      var i = (DB[cat] || []).indexOf(n);
+      if(i >= 0){ DB[cat].splice(i, 1); save(); }
+      toast('La hoja rechazó «' + n + '»: ' + (e && e.message ? e.message : e)
+        + '. No quedó creado; vuelva a intentarlo.');
+      render();
     });
+  }else{
+    toast('«' + n + '» agregado al catálogo');
   }
-  toast('«' + n + '» agregado al catálogo');
   A[f](n);
 };
 A.vista = function(k, v){ cur.c[k] = v; render(); };
@@ -3916,9 +4087,56 @@ A.verCompras = function(){ go('pend', { scope:'c' }); };
 A.verPedidos = function(){ go('pend', { scope:'p' }); };
 
 /* ---- flujo 1 · pedido nuevo ---- */
-A.npStart = function(){ W = { cliente:null, canal:null, solicitud:today(), compromiso:addD(1) }; go('np1'); };
-A.npCli = function(v){ W.cliente = v; var c=String(((DB.cliMeta||{})[v]||{}).canal||'').toUpperCase(); W.canal=c==='M'?'M':c==='R'?'R':W.canal; W._q = ''; render(); };
-A.npCanal = function(c){ W.canal = c; go('np3'); };
+A.npStart = function(){ W = { cliente:null, canal:null, npEdit:false, npGuardarCanal:undefined,
+  solicitud:today(), compromiso:addD(1) }; go('np1'); };
+/* v5.4 · BUG_002 · el UNICO sitio que preselecciona el canal. S.np2 solo
+   lo PRESENTA; no vuelve a calcularlo. Al cambiar de cliente se limpia la
+   decision anterior, que si no se arrastraba de un cliente a otro. */
+A.npCli = function(v){
+  W.cliente = v;
+  var c = canalDeTexto_((fiscalDe(v) || {}).canal);
+  W.canal = c || null;
+  W.npEdit = false;
+  W.npGuardarCanal = undefined;
+  W._q = '';
+  render();
+};
+A.npCanalEditar = function(){
+  if(!npPuedeEditarCanal_()){
+    toast('Cambiar el canal de un cliente lo deciden Crstian, Hernando o Deyana.');
+    return;
+  }
+  W.npEdit = true; W.npGuardarCanal = undefined; render();
+};
+A.npCanal = function(c){
+  W.canal = c;
+  var enHoja = npCanalDeHoja_();
+  W.npEdit = false;
+  /* si coincide con la hoja no hay nada que decidir: se sigue */
+  if(!enHoja || enHoja === c){ W.npGuardarCanal = undefined; go('np3'); return; }
+  W.npGuardarCanal = undefined;   /* dispara la pregunta del paso C */
+  render();
+};
+A.npCanalSeguir = function(){ if(W.canal) go('np3'); };
+A.npCanalGuardar = function(si){
+  W.npGuardarCanal = !!si;
+  if(!si){ toast('El canal del cliente queda como estaba; este pedido va con ' + npNombreCanal_(W.canal) + '.'); go('np3'); return; }
+  if(!ONLINE){ toast('Sin conexión no se puede cambiar el canal del cliente. Este pedido va con ' + npNombreCanal_(W.canal) + '.'); go('np3'); return; }
+  var cli = W.cliente, c = W.canal;
+  srv('apiGuardarCliente', [cli, { Canal_habitual:c }, DB.operador], function(r){
+    if(r && r.ok){
+      DB.cliMeta = DB.cliMeta || {};
+      DB.cliMeta[cli] = DB.cliMeta[cli] || {};
+      DB.cliMeta[cli].canal = c;
+      save();
+      toast(cli + ' queda como ' + npNombreCanal_(c) + ' en CAT_Clientes.');
+    }else toast((r && r.error) || 'La hoja no aceptó el cambio de canal.');
+  }, function(e){
+    toast('No se pudo cambiar el canal del cliente: ' + (e && e.message ? e.message : e)
+      + '. Este pedido va con ' + npNombreCanal_(c) + '.');
+  });
+  go('np3');
+};
 A.npSol = function(n){ W.solicitud = addD(n); if(W.compromiso < W.solicitud) W.compromiso = W.solicitud; render(); };
 A.npSolM = function(v){ W.solicitud = v; if(W.compromiso < W.solicitud) W.compromiso = W.solicitud; render(); };
 A.npFecha = function(n){ W.compromiso = addD(n); render(); };
@@ -4280,8 +4498,15 @@ A.rcSave = function(){
 A.enStart = function(pid){
   var p = pedido(pid);
   if(!portero(p, 'P')) return;
-  if(p.estado !== 'LISTO'){ toast(pid + ' no está listo para entregar (está ' + p.estado.replace('_', ' ').toLowerCase() + ').'); go('detP', { id:pid }); return; }
-  if((!p.doc || !p.doc.tipo) && p.tipo !== 'MOSTRADOR'){ toast('Primero emite la remisión o deja la factura electrónica por facturar.'); A.facStart(pid); return; }
+  /* v5.4 · BUG_004 · misma autoridad. La seccion 6 ya significa «tiene
+     documento y falta entregarlo», asi que no hace falta volver a
+     comprobar el documento con una condicion aparte. */
+  var sec = h6SeccionDe_(p);
+  if(sec === 5){ toast('Primero emite la remisión o la factura electrónica: sin documento no hay nada que el cliente reciba.'); A.facStart(pid); return; }
+  if(sec !== 6){
+    toast(pid + ' no esta en Entrega: esta en ' + h6DondeVa_(p) + '.');
+    go('detP', { id:pid }); return;
+  }
   W = { pid:pid, te:today(), gasto:null, sinNovedad:true, doc:true, otro:false }; go('en1');
 };
 A.enChk = function(k){ W[k] = !W[k]; render(); };
@@ -8964,6 +9189,26 @@ function valorSi(id, v){
   var el = document.getElementById(id);
   if(el && document.activeElement !== el) el.value = (v === '' || v === null || v === undefined) ? '' : v;
 }
+/* =====================================================================
+   v5.4 · valorAhora_ · el hermano de valorSi para las acciones directas
+   =====================================================================
+   valorSi NO escribe en un campo enfocado, y eso protege a quien esta
+   escribiendo de un repintado que llega de fuera. Pero cuando la persona
+   pulsa + o −, el numero tiene que cambiar aunque el campo tenga el foco:
+   si no, el valor interno sube y la pantalla se queda quieta, que es peor
+   que cualquiera de los dos defectos anteriores.
+   Se escribe y se deja el cursor al final, para que si sigue escribiendo lo
+   haga a continuacion y no en medio del numero.
+   ===================================================================== */
+function valorAhora_(id, v){
+  var el = document.getElementById(id);
+  if(!el) return false;
+  el.value = (v === '' || v === null || v === undefined) ? '' : v;
+  if(document.activeElement === el){
+    try{ var n = String(el.value).length; el.setSelectionRange(n, n); }catch(e){}
+  }
+  return true;
+}
 /** Enfoca y selecciona, para que al escribir se reemplace en vez de añadirse. */
 function enfocar(id, sel){
   setTimeout(function(){
@@ -13059,8 +13304,8 @@ S.fedit = function(c){
     + '<span>%</span></div>';
   b += '<div id="fedt">' + feditTot() + '</div>';
 
-  b += '<div class="sec">¿Por que se corrige?</div><div class="chips" id="fedm">'
-    + feditMotivos() + '</div>';
+  /* v5.4 · BUG_005 · la pregunta aparece solo cuando cambia un precio */
+  b += '<div id="fedmbox">' + feditMotivoBloque() + '</div>';
 
   return { title:'Corregir la factura', sub:p.id + ' · ' + esc(p.cliente),
     ctx:ctxId(p.id, 'CORRIGIENDO', esc(p.cliente)), body:b, foot:feditPie() };
@@ -13116,6 +13361,20 @@ function feditCambios(){
   if(W.descGlobal !== W.descGlobal0) n++;
   return n;
 }
+/* =====================================================================
+   v5.4 · BUG_005 · «CUALQUIER EDICION EXIGE RAZON»
+   =====================================================================
+   Palabras del usuario: «este enunciado debe aparecer solo y unicamente si
+   el operador cambia el precio del producto».
+   Asi que el motivo se pide cuando cambia un PRECIO. Cambiar solo un
+   descuento o el descuento global ya no lo pide: se guarda igual y queda
+   registrado en LOG_Cambios como siempre, porque el registro es otra cosa
+   distinta de la pregunta en pantalla. Lo que se quita es la friccion, no
+   la trazabilidad.
+   ===================================================================== */
+function feditCambioDePrecio(){
+  return W.lineas.some(function(l){ return Number(l.precio) !== Number(l.precio0); });
+}
 
 function feditMotivos(){
   return ['Me equivoque al digitar', 'El cliente cambio el pedido',
@@ -13125,10 +13384,19 @@ function feditMotivos(){
   }).join('');
 }
 
+function feditMotivoBloque(){
+  if(!feditCambioDePrecio()) return '';
+  return '<div class="sec">¿Por que se cambia el precio?</div><div class="chips" id="fedm">'
+    + feditMotivos() + '</div>'
+    + '<p class="hint">Solo se pregunta cuando cambia un <b>precio</b>. Un descuento se guarda '
+    + 'sin preguntar, y los dos quedan registrados igual en LOG_Cambios.</p>';
+}
 function feditPie(){
   var n = feditCambios();
   if(!n) return '<button class="btn" disabled>No has cambiado nada</button>';
-  if(!W.motivo) return '<button class="btn" disabled>Falta decir por que</button>';
+  /* v5.4 · BUG_005 · el motivo solo es obligatorio si cambio un precio */
+  if(feditCambioDePrecio() && !W.motivo)
+    return '<button class="btn" disabled>Falta decir por qué cambia el precio</button>';
   return '<button class="btn pri" onclick="A.fedGuardar()">'
     + '<svg class="i"><use href="#i-check"/></svg> Guardar ' + n + ' correccion'
     + (n > 1 ? 'es' : '') + '</button>';
@@ -13138,7 +13406,9 @@ function feditPie(){
 function fedSync(i){
   if(i !== undefined) pintar('fedr' + i, feditFila(i));
   pintar('fedt', feditTot());
-  pintar('fedm', feditMotivos());
+  /* v5.4 · BUG_005 · el bloque entero aparece o desaparece segun si hay
+     cambio de precio, asi que se repinta el contenedor, no solo los chips */
+  pintar('fedmbox', feditMotivoBloque());
   pintarPie(feditPie());
 }
 A.fedW = function(i, x){
@@ -13191,9 +13461,14 @@ A.fedGuardar = function(){
     if(l.dpct!==l.dpct0)cambios.push({Tabla:'R2_Detalle',Registro:p.id+' / '+l.cod,Campo:'Descuento_pct',Valor_antes:l.dpct0,Valor_despues:l.dpct,Motivo:W.motivo+' · descuento de ESTA venta; CAT_Productos no se modificó'});
   });
   if(W.descGlobal!==W.descGlobal0)cambios.push({Tabla:'R3_Pedidos',Registro:p.id,Campo:'Descuento_global_pct',Valor_antes:W.descGlobal0,Valor_despues:W.descGlobal,Motivo:W.motivo});
-  if(!cambios.length||!W.motivo)return;
+  if(!cambios.length)return;
+  if(feditCambioDePrecio() && !W.motivo)return;
   W.guardando=true;bloquearPie('Guardando corrección…');
-  var datos={motivo:W.motivo,descGlobal:W.descGlobal,lineas:W.lineas.map(function(l){return {cod:l.cod,precio:l.precio,dpct:l.dpct};})};
+  /* v5.4 · BUG_005 · si no cambio ningun precio no hay motivo escrito, y el
+     servidor lo acepta: pone el suyo. Un descuento no necesita explicacion
+     del operador, pero SI necesita quedar registrado. */
+  var datos={motivo:W.motivo||'Ajuste de descuento sin cambio de precio',
+    descGlobal:W.descGlobal,lineas:W.lineas.map(function(l){return {cod:l.cod,precio:l.precio,dpct:l.dpct};})};
   srv('apiEditarFactura',[p.id,datos],function(r){
     W.guardando=false;
     /* en la copia de este dispositivo pasa lo mismo que en la hoja: la
@@ -13263,16 +13538,24 @@ var AL_TIPOID = ['NIT', 'CC', 'CE', 'PP', 'TI', 'RC', 'NUIP', 'PEP', 'PPT',
                  'DIE', 'TE', 'NIT de otro pais'];
 
 /** Los pedidos LISTOS que todavia no tienen documento. Lo que hay que facturar. */
+/* =====================================================================
+   v5.4 · BUG_004 · ESTAS DOS ERAN LA TERCERA FUENTE DE VERDAD
+   =====================================================================
+   Filtraban por `estado === 'LISTO'`, que no es lo mismo que la seccion.
+   h6SeccionDe_ manda a Entrega (6) tambien a un pedido que TIENE documento
+   aunque su Estado no diga LISTO -- porque si ya se le emitio documento,
+   lo que falta es entregarlo. Con el filtro viejo ese pedido se contaba en
+   la tarjeta de Entrega y no aparecia en su lista.
+   Ahora las dos preguntan a la autoridad unica. Se conservan los nombres
+   porque los usan el panel, los KPI y la tabla de inicio: lo que cambia es
+   de donde sacan la respuesta, no quien las llama.
+   ===================================================================== */
 function porFacturarHoy(){
-  return vig(DB.pedidos).filter(function(p){
-    return p.estado === 'LISTO' && !(p.doc && p.doc.tipo);
-  });
+  return vig(DB.pedidos).filter(function(p){ return h6SeccionDe_(p) === 5; });
 }
 /** Los que ya tienen documento y esperan entrega. */
 function facturadosSinEntregar(){
-  return vig(DB.pedidos).filter(function(p){
-    return p.estado === 'LISTO' && p.doc && p.doc.tipo;
-  });
+  return vig(DB.pedidos).filter(function(p){ return h6SeccionDe_(p) === 6; });
 }
 
 S.fsel = function(){
@@ -13398,15 +13681,20 @@ A.facStartReal = function(pid){ return A.facStartNativa_(pid); };
 A.facStartNativa_ = function(pid){
   var p = pedido(pid);
   if(!portero(p, 'P')) return;
-  if(p.estado !== 'LISTO'){
-    toast(pid + ' no esta listo para facturar (esta '
-      + p.estado.replace('_', ' ').toLowerCase() + ').');
-    go('detP', { id:pid });
+  /* v5.4 · BUG_004 · la puerta pregunta a la autoridad unica. Si el pedido
+     no esta en Facturacion, se dice DONDE esta y cual es su salida, en vez
+     del generico «no esta listo» que dejaba al operador sin camino. */
+  var sec = h6SeccionDe_(p);
+  if(sec === 6){
+    toast(pid + ' ya tiene documento ' + ((p.doc && p.doc.numero) || '(de Alegra)') + '. Falta entregarlo.');
+    go('fact', { id:pid });
     return;
   }
-  if(p.doc && p.doc.tipo){
-    toast(pid + ' ya tiene documento ' + (p.doc.numero || '(de Alegra)') + '.');
-    go('fact', { id:pid });
+  if(sec !== 5){
+    toast(pid + ' no esta en Facturacion: esta en ' + h6DondeVa_(p) + '. '
+      + (sec >= 2 && sec <= 4 ? 'Primero hay que cerrarlo en preparacion.'
+        : sec === 7 ? 'Ya se entrego.' : 'Esta inhabilitado.'));
+    go('detP', { id:pid });
     return;
   }
   var fisc = fiscalDe(p.cliente);
@@ -13490,14 +13778,33 @@ S.fac = function(){
         }).join('') + '</div>';
   }
 
-  /* --- MEDIO DE PAGO --- */
-  b += '<div class="sec">Medio de pago</div><div class="chips">'
-    + AL_MEDIO.map(function(o){
-        return '<button class="chip ' + (W.medio === o ? 'sel' : '') + '" '
-          + 'onclick="A.facMedio(\'' + esc(o) + '\')">' + esc(o) + '</button>';
-      }).join('') + '</div>'
-    + '<p class="hint">Son los medios que acepta la plantilla de Alegra. Si se manda uno '
-    + 'que no esta en su lista, Alegra rechaza el archivo completo.</p>';
+  /* =====================================================================
+     v5.4 · BUG_008 · A CREDITO NO HAY MEDIO DE PAGO, Y NO SE PREGUNTA
+     =====================================================================
+     Palabras del usuario: «cuando yo seleccione credito y el plazo, ya no
+     debe aparecer el metodo de pago ya que aun no me han pagado».
+     Tiene razon y era una contradiccion entre dos de mis propias guardas:
+     la pantalla OBLIGABA a escoger un medio, y despues el servidor
+     rechazaba el documento por ilogico. Hoy ninguna venta a credito se
+     podia emitir.
+     A credito el medio queda en «Instrumento no definido», que es el unico
+     valor de la lista de Alegra que significa «todavia no definido». El
+     medio real se registra cuando entre el abono, en Cartera.
+     ===================================================================== */
+  if(esCredito){
+    b += '<div class="sec">Medio de pago</div>'
+      + noteBox('A crédito <b>no se pregunta el medio de pago</b>: todavía no le han pagado. '
+        + 'El documento se emite con <b>Instrumento no definido</b> y el medio real queda '
+        + 'registrado cuando entre el abono, en <b>Cartera</b>.');
+  }else{
+    b += '<div class="sec">Medio de pago</div><div class="chips">'
+      + AL_MEDIO.filter(function(o){ return o !== 'Instrumento no definido'; }).map(function(o){
+          return '<button class="chip ' + (W.medio === o ? 'sel' : '') + '" '
+            + 'onclick="A.facMedio(\'' + esc(o) + '\')">' + esc(o) + '</button>';
+        }).join('') + '</div>'
+      + '<p class="hint">Son los medios que acepta la plantilla de Alegra. Si se manda uno '
+      + 'que no esta en su lista, Alegra rechaza el archivo completo.</p>';
+  }
 
   /* --- DATOS DEL CLIENTE, editables --- */
   b += '<div class="sec">Datos del cliente</div>';
@@ -13622,9 +13929,19 @@ function facDvTxt(){
 function facSync(origen){
   pintar('facv', facVenceTxt());
   pintar('facdv', facDvTxt());
-  if(origen !== 'facp') valorSi('facp', W.plazo);
+  /* v5.4 · mismo caso que el contador de cantidad: los botones de ±15 dias
+     son una accion de la persona, asi que el valor se escribe aunque el
+     campo tenga el foco. Si lo escribio a mano (origen 'facp') no se toca. */
+  if(origen !== 'facp') valorAhora_('facp', W.plazo);
 }
-A.facForma = function(o){ W.forma = o; render(); };
+A.facForma = function(o){
+  W.forma = o;
+  /* v5.4 · BUG_008 · al pasar a credito el medio deja de tener sentido, y al
+     volver a contado hay que volver a escogerlo: no se arrastra el anterior. */
+  if(String(o).toUpperCase().indexOf('CRED') === 0) W.medio = 'Instrumento no definido';
+  else if(W.medio === 'Instrumento no definido') W.medio = 'Efectivo';
+  render();
+};
 A.facMedio = function(o){ W.medio = o; render(); };
 A.facPlazo = function(d){ W.plazo = Math.max(0, (Number(W.plazo) || 0) + d); facSync(); };
 A.facPlazoSet = function(x){ W.plazo = ent(x, 0); facSync('facp'); render(); };
@@ -13750,7 +14067,11 @@ A.facEjecutar = function(){
   var pid = W.pid, tipo = W.tipoDoc, p = pedido(pid);
   var base = tlPedido(p) || today();
   var esCredito = String(W.forma).toUpperCase().indexOf('CRED') === 0;
-  var pago = { forma:W.forma, medio:W.medio,
+  /* v5.4 · BUG_008 · un solo sitio decide el medio segun la forma de pago.
+     A credito es SIEMPRE «Instrumento no definido»: no se manda lo que el
+     operador hubiera dejado seleccionado antes de cambiar a credito. */
+  var pago = { forma:W.forma,
+               medio: esCredito ? 'Instrumento no definido' : W.medio,
                plazo: esCredito ? Number(W.plazo) || 0 : 0,
                vence: esCredito ? addDias(base, Number(W.plazo) || 0) : '',
                /* v5.3 · punto 3 · el vendedor es del documento */
@@ -14028,7 +14349,16 @@ var indNativa_=S.ind;S.ind=function(c){return esRol('ADMIN')?indNativa_(c):{titl
 var cfgNativa_=S.cfg;if(cfgNativa_)S.cfg=function(c){return esRol('ADMIN')?cfgNativa_(c):{title:'Configuración',body:'<div class="empty">Solo Crstian puede cambiar la configuración.</div>',back:true};};
 
 /* Pago de mostrador en el paso de cobro original. */
-A.mosPago=function(campo,valor){W[campo]=campo==='plazo'?Number(valor)||0:valor;if(campo==='forma')render();};
+A.mosPago=function(campo,valor){
+  W[campo]=campo==='plazo'?Number(valor)||0:valor;
+  /* v5.4 · BUG_008 · misma regla que en facturacion: a credito el medio es
+     «Instrumento no definido» y no se pregunta. */
+  if(campo==='forma'){
+    if(String(valor).toUpperCase().indexOf('CRED')===0) W.medio='Instrumento no definido';
+    else if(W.medio==='Instrumento no definido') W.medio='Efectivo';
+    render();
+  }
+};
 
 /* Caja, cartera y análisis: consultas en vivo, nunca cifras de demostración. */
 function cargarCaja(){
@@ -14367,7 +14697,9 @@ vaciarCola=function(cb){
         var antes=DB.colaPre.length;
         DB.colaPre=DB.colaPre.filter(function(x){return x.pid!==job.pid;});save();
         toast(job.pid+' cambió en otro dispositivo. Se retiró su preparación local ('+(antes-DB.colaPre.length)+' acción(es)); la hoja manda.');
-        colaOcupada_=false;if(mas()){vaciarCola(cb);return;}sincronizar();return;
+        /* v5.4 · BUG_003 · ligero: una sincronizacion no silenciosa desarmaba
+           la guarda de edicion y expulsaba al operador de la pantalla. */
+        colaOcupada_=false;if(mas()){vaciarCola(cb);return;}sincronizar(true);return;
       }
       pendiente();
     });
@@ -14383,14 +14715,14 @@ vaciarCola=function(cb){
       if(blo.length)toast('La hoja rechazó '+blo.length+' escritura(s): '+blo.join(', ')+' está(n) inhabilitado(s). Actualizando...');
       colaOcupada_=false;
       if(mas()){vaciarCola(cb);return;}
-      SYNC.estado='listo';pintarSync();if(blo.length){sincronizar();return;}if(cb)cb();
+      SYNC.estado='listo';pintarSync();if(blo.length){sincronizar(true);return;}if(cb)cb();
     },function(e){
       var msg=e&&e.message?e.message:String(e||''),m=msg.match(/CONFLICTO_CIERRE:\s*(\S+)/);
       if(m){
         var pid=m[1],antes=DB.cola.length;
         DB.cola=DB.cola.filter(function(d){var id=String((d.claves&&d.claves[0]&&d.claves[0].valor)||(d.fila||{}).P_num||'');return !(id===pid&&['R3_Pedidos','R2_Preparacion','R2_Detalle'].indexOf(d.hoja)>=0);});save();
         toast(pid+' ya estaba LISTO en otro dispositivo. Se descartó sólo su preparación atrasada ('+(antes-DB.cola.length)+' fila(s)); entrega y documento siguen habilitados.');
-        colaOcupada_=false;if(mas()){vaciarCola(cb);return;}sincronizar();return;
+        colaOcupada_=false;if(mas()){vaciarCola(cb);return;}sincronizar(true);return;
       }
       pendiente();
     });
@@ -14443,22 +14775,76 @@ function prePedido(){return pedido(W&&W.pid);}
 function prePendientes(){return arr(W.items).filter(function(l){return l.estadoValidacion!=='VALIDADA';});}
 function prePasoNombre(e){return e==='ORGANIZAR'?'2 · Organizar':e==='DESPACHAR'?'3 · Despachar':e==='FINALIZAR'?'4 · Finalizar':e==='LISTO'?'Listo':'Preparación';}
 A.preSel=function(etapa){go('preSel',{etapa:etapa});};
+/* =====================================================================
+   v5.4 · BUG_004 · LA LISTA SALE DE LA MISMA FUENTE QUE LA TARJETA
+   =====================================================================
+   ESTABA ASI, y es la causa exacta de lo que el usuario fotografio:
+
+     (p.etapa || (p.estado==='NUEVO' ? 'ORGANIZAR' : p.estado)) === c.etapa
+
+   Esa condicion exige que Etapa_preparacion diga LITERALMENTE el nombre de
+   la seccion. El contador de la tarjeta, en cambio, sale de h6SeccionDe_,
+   que clasifica un pedido con Etapa='LISTO' y Estado abierto en «4
+   Finalizar». Resultado medido en produccion con P-009 y P-020: la tarjeta
+   decia 2 y al entrar la lista decia 0.
+
+   AHORA: la lista pregunta a h6SeccionDe_, igual que la tarjeta, igual que
+   los filtros, e igual que el servidor. No hay forma de que discrepen,
+   porque no hay dos reglas que mantener de acuerdo: hay una.
+   ===================================================================== */
+var SEC_DE_ETAPA_ = { ORGANIZAR:2, DESPACHAR:3, FINALIZAR:4 };
 S.preSel=function(c){
-  var l=vig(DB.pedidos).filter(function(p){return (p.etapa||(p.estado==='NUEVO'?'ORGANIZAR':p.estado))===c.etapa;});
+  var n=SEC_DE_ETAPA_[String(c.etapa||'').toUpperCase()]||2;
+  var l=vig(DB.pedidos).filter(function(p){return h6SeccionDe_(p)===n;});
   var b='<h1 class="q">'+prePasoNombre(c.etapa)+'</h1><p class="sub">Elige un pedido. Al entrar continúa exactamente donde quedó.</p>';
   b+=l.length?l.map(function(p){var items=preItems(p),pend=items.filter(function(x){return x.estadoValidacion!=='VALIDADA';}).length;
     return '<button class="opt" onclick="A.preStart(\''+p.id+'\')"><span class="num am" style="padding:7px 9px">'+p.id+'</span><span class="gr"><b>'+esc(p.cliente)+'</b><span>'+items.length+' producto(s)'+(pend?' · '+pend+' pendiente(s) de validar':' · borrador guardado')+'</span></span><svg class="i chev"><use href="#i-chev"/></svg></button>';}).join(''):'<div class="empty">No hay pedidos en esta sección.</div>';
   return {title:prePasoNombre(c.etapa),sub:l.length+' pedido(s)',tab:'pedidos',body:b};
 };
+/* =====================================================================
+   v5.4 · BUG_004 y BUG_003 · LA PUERTA DE LA PREPARACION
+   =====================================================================
+   DOS CORRECCIONES EN LA MISMA FUNCION, porque es el mismo sitio:
+
+   1 · BUG_004 · la condicion de entrada era `estado LISTO o ENTREGADO`,
+       que es OTRA regla distinta de la del carril. Ahora se pregunta a
+       h6SeccionDe_: si el pedido esta en 2, 3 o 4 se entra; si no, se dice
+       EN QUE SECCION esta de verdad y cual es su salida, en lugar del
+       generico «ya esta cerrado» que dejaba al operador sin saber que hacer.
+
+   2 · BUG_003 · esto REASIGNABA W por completo. Cuando el ciclo de
+       sincronizacion de fondo llamaba aqui, el producto al que el operador
+       le estaba poniendo la cantidad (que vive solo en W.nuevo) se perdia y
+       la pantalla volvia a la lista. Ahora, si es el MISMO pedido, lo que
+       estaba a medio cargar se conserva y se vuelve a su pantalla.
+   ===================================================================== */
 A.preStart=function(pid,etapa){
   var p=pedido(pid);if(!portero(p,'P'))return;
-  if(p.estado==='LISTO'||p.estado==='ENTREGADO'){toast(pid+' ya está cerrado; no se puede cambiar la preparación.');go('detP',{id:pid});return;}
-  /* v5.1 · Tanda 1 · si no se pasa etapa, se DERIVA de los hechos en vez de
-     creerse Etapa_preparacion a ciegas. Y si la guardada contradice los
-     hechos, se avisa al operador en lugar de llevarlo en silencio al paso
-     equivocado. */
+  var sec=h6SeccionDe_(p);
+  if([2,3,4].indexOf(sec)<0){
+    toast(pid+' no esta en preparacion: esta en '+h6DondeVa_(p)+'. '
+      +(sec===5?'Se puede facturar.':sec===6?'Se puede registrar la entrega.':sec===7?'Ya se entrego.':'Esta inhabilitado.'));
+    go('detP',{id:pid});return;
+  }
+  /* si no se pasa etapa, se DERIVA de los hechos en vez de creerse
+     Etapa_preparacion a ciegas; y si la guardada contradice los hechos, se
+     avisa al operador en lugar de llevarlo en silencio al paso equivocado. */
   if(!etapa){ h6AvisoEtapa_(p); etapa=h6EtapaReal_(p); }
-  W={pre:true,pid:pid,etapa:etapa,revision:p.revision||1,canal:p.canal,items:preItems(p),descGlobal:p.descGlobal||0,_q:''};
+
+  var mismo = !!(W && W.pre && W.pid===pid);
+  var pend  = mismo ? W.nuevo : null;         /* el producto a medio cargar */
+  var edit  = mismo ? W.edit  : -1;
+  var busca = mismo ? (W._q||'') : '';
+
+  W={pre:true,pid:pid,etapa:etapa,revision:p.revision||1,canal:p.canal,
+     items:preItems(p),descGlobal:p.descGlobal||0,_q:busca};
+
+  if(pend){
+    /* se devuelve a la pantalla donde estaba, con su cantidad intacta */
+    W.nuevo=pend; W.edit=edit;
+    go('preProducto');
+    return;
+  }
   go(W.etapa==='DESPACHAR'?'preDespacho':W.etapa==='FINALIZAR'?'preFinalizar':'preOrganizar');
 };
 function preBuscaHtml(){
@@ -14486,10 +14872,37 @@ S.preProducto=function(){
   if(!v.tipo){b+=warnBox('Falta clasificar este producto. Hernando, Deyana o Crstian pueden hacerlo; no se asigna una clase a todo el catálogo.')+optBtn("A.preTipo('F')",'wrench','','F · se fabrica aquí','')+optBtn("A.preTipo('R')",'box','','R · se reempaca','')+optBtn("A.preTipo('M')",'layers','','M · puede seguir los dos caminos','');}
   else if(v.tipo==='M'&&!v.origenM){b+=noteBox('Para <b>este pedido</b>, indica el origen. El catálogo seguirá siendo M.')+optBtn("A.preOrigen('F')",'wrench','','F · fabricado','')+optBtn("A.preOrigen('R')",'box','','R · comprado / reempacado','');}
   else{b+='<div class="f2campo"><label>¿CUÁNTO PIDIÓ EL CLIENTE?</label><div class="f2num"><button onclick="A.preN(-1)">−</button><input id="pre-n" type="text" inputmode="numeric" value="'+v.n+'" oninput="A.preNSet(this.value)"><button onclick="A.preN(1)">+</button></div></div>'+noteBox('Aquí sólo se registra lo solicitado. La disponibilidad y las preguntas de bodega se responden en <b>Despachar</b>.');}
-  var listo=v.tipo&&(v.tipo!=='M'||v.origenM)&&Number(v.n)>0;
-  return {title:W.edit>=0?'Cambiar producto':'Agregar producto',sub:prePasoNombre(W.etapa)+' · cantidad solicitada',tab:'pedidos',body:b,foot:'<button class="btn pri" '+(listo?'':'disabled')+' onclick="A.preGuardarProducto()">Guardar producto</button>'};
+  return {title:W.edit>=0?'Cambiar producto':'Agregar producto',sub:prePasoNombre(W.etapa)+' · cantidad solicitada',tab:'pedidos',body:b,foot:prePieProducto_()};
 };
-A.preN=function(d){W.nuevo.n=Math.max(1,ent(W.nuevo.n,1)+d);render();};A.preNSet=function(v){W.nuevo.n=Math.max(1,ent(v,1));};
+/* =====================================================================
+   v5.4 · BUG_003 · LA CANTIDAD SE REPINTA POR PARTES
+   =====================================================================
+   A.preN hacia render(), que reconstruye todo el HTML de la pantalla: cada
+   toque en − o en + destruia el <input> y lo volvia a crear, con lo que se
+   perdia el cursor y, en el movil, se cerraba el teclado. Y A.preNSet no
+   repintaba NADA, asi que el boton de guardar no se habilitaba hasta que
+   algo mas forzara un repintado.
+
+   Ahora las dos usan preSync(), que escribe el valor en el input que ya
+   existe y recalcula solo el pie. Es el mismo patron que ya usan mosSync(),
+   fedSync() y facSync() en este archivo: el elemento en el que la persona
+   esta escribiendo no se toca.
+   ===================================================================== */
+function prePieProducto_(){
+  var v = W.nuevo;
+  var listo = !!(v && v.tipo && (v.tipo !== 'M' || v.origenM) && Number(v.n) > 0);
+  return '<button class="btn pri" ' + (listo ? '' : 'disabled')
+    + ' onclick="A.preGuardarProducto()">Guardar producto</button>';
+}
+function preSync(desdeInput){
+  /* desdeInput: lo escribio la persona a mano, asi que el campo ya muestra
+     lo correcto y tocarlo moveria el cursor. En cualquier otro caso (los
+     botones + y −) hay que escribirlo, enfocado o no. */
+  if(!desdeInput) valorAhora_('pre-n', W.nuevo ? W.nuevo.n : '');
+  pintarPie(prePieProducto_());
+}
+A.preN=function(d){ if(!W.nuevo)return; W.nuevo.n=Math.max(1,ent(W.nuevo.n,1)+d); preSync(); };
+A.preNSet=function(v){ if(!W.nuevo)return; W.nuevo.n=Math.max(1,ent(v,1)); preSync(true); };
 A.preGuardarProducto=function(){var v=W.nuevo;if(!v||!v.tipo||Number(v.n)<1)return;var it={cod:v.cod,desc:desc(v.cod),n:Number(v.n),w:'',tipo:v.tipo,origenM:v.origenM,dpct:Number(v.dpct)||0,precio:precioDe(v.cod,W.canal),iva:ivaDe(v.cod),estadoValidacion:'PENDIENTE',como:''};if(W.edit>=0)W.items[W.edit]=it;else W.items.push(it);
   /* =====================================================================
      v5.1 · AL GUARDAR UN PRODUCTO SE VUELVE AL BUSCADOR, NO A UNA PANTALLA VACIA
@@ -14842,22 +15255,20 @@ var scanElegirNativo_=A.f2scanElegir;
 A.f2scanElegir=function(cod){if(W.pre){A.preTomar(cod);return;}return scanElegirNativo_(cod);};
 
 
-/* ==================== GUÍA DE SEIS SECCIONES Y SALIDA UNICA ==================== */
-S.pedidos=function(){
-  var org=vig(DB.pedidos).filter(function(p){return (p.etapa||'ORGANIZAR')==='ORGANIZAR'&&p.estado!=='LISTO'&&p.estado!=='ENTREGADO';}),
-      des=vig(DB.pedidos).filter(function(p){return p.etapa==='DESPACHAR';}),fin=vig(DB.pedidos).filter(function(p){return p.etapa==='FINALIZAR';}),
-      ent=vig(DB.pedidos).filter(function(p){return p.estado==='LISTO'&&p.doc;});
-  var b=bannerSync()+'<div class="sec">Pedido de cliente · el expediente completo</div><div class="grp cli">'
-    +ficha('A.npStart()','file','1 · Crear el pedido','Cliente, canal de precios, solicitud y compromiso',null)
-    +ficha("A.preSel('ORGANIZAR')",'box','2 · Organizar','Productos y cantidades solicitadas; borrador reanudable',org)
-    +ficha("A.preSel('DESPACHAR')",'wrench','3 · Despachar','Validar cada referencia: solicitado, disponible y despachado',des)
-    +ficha("A.preSel('FINALIZAR')",'check','4 · Finalizar','Confirmar faltantes, reproceso y cierre definitivo; queda LISTO',fin)
-    +ficha("go('fsel')",'tag','5 · Facturación','Listos sin remisión o factura electrónica',porFacturarHoy())
-    +ficha("go('enSel')",'truck','6 · Entrega','Solo pedidos listos que ya tienen documento',ent)+'</div>'
-    +noteBox('Puedes agregar o cambiar productos en Organizar, Despachar y Finalizar. Una línea nueva vuelve a <b>pendiente</b> y bloquea el cierre hasta validarla. Después de LISTO, la preparación queda protegida.');
-  return {title:'Pedidos',sub:'El mismo expediente, de principio a fin',tab:'pedidos',body:b};
-};
-S.enSel=function(){var l=porEstado('LISTO').filter(function(p){return !!(p.doc&&p.doc.tipo);});var b='<h1 class="q">¿Cuál pedido entregaste?</h1><p class="sub">Aquí sólo aparecen pedidos listos con documento. Así no se repiten en Facturación y Entrega.</p>'+(l.length?l.map(function(p){return filaPedido(p,"A.enStart('"+p.id+"')");}).join(''):'<div class="empty">No hay pedidos con documento pendientes de entrega.</div>');return {title:'6 · Entrega',sub:l.length+' por entregar',tab:'pedidos',body:b};};
+/* ==================== GUÍA DE SEIS SECCIONES Y SALIDA UNICA ====================
+   v5.4 · AQUI HABIA UNA SEGUNDA S.pedidos, Y SE ELIMINA.
+   Construia el carril con CUATRO condiciones independientes --
+   (p.etapa||'ORGANIZAR')==='ORGANIZAR' && estado!=='LISTO' …, p.etapa==='DESPACHAR',
+   p.etapa==='FINALIZAR', p.estado==='LISTO'&&p.doc -- que es justo el patron
+   que hizo invisible a P-019 y que se elimino en v5.2.
+   Estaba MUERTA: la definicion que gana es la del final del archivo, que usa
+   h6Carril_ y h6Filtros_. Pero seguia pareciendo viva al leer el archivo, y
+   cualquiera podia copiar de ahi una regla equivocada. El usuario pidio que
+   no quede codigo que no sirve: se va.
+   ============================================================================ */
+/* v5.4 · BUG_004 · antes: porEstado('LISTO') + doc, que es otra regla.
+   Ahora la seccion 6, la misma que cuenta la tarjeta. */
+S.enSel=function(){var l=vig(DB.pedidos).filter(function(p){return h6SeccionDe_(p)===6;});var b='<h1 class="q">¿Cuál pedido entregaste?</h1><p class="sub">Aquí sólo aparecen pedidos listos con documento. Así no se repiten en Facturación y Entrega.</p>'+(l.length?l.map(function(p){return filaPedido(p,"A.enStart('"+p.id+"')");}).join(''):'<div class="empty">No hay pedidos con documento pendientes de entrega.</div>');return {title:'6 · Entrega',sub:l.length+' por entregar',tab:'pedidos',body:b};};
 /* v5.1 · Tanda 1 · ANTES: onclick="A.preStart('P-003')" sin la etapa, y el
    texto del boton la leia de p.etapa. El rotulo acertaba y la navegacion no.
    AHORA: se calcula la etapa REAL con h6EtapaReal_ (que no se cree una etapa
@@ -16785,10 +17196,14 @@ S.mos2 = function(){
     + '<div class="row2"><select class="f" aria-label="Forma de pago" onchange="A.mosPago(\'forma\',this.value)">'
     + ['Contado','Credito'].map(function(x){ return '<option value="' + x + '" ' + (W.forma === x ? 'selected' : '') + '>' + x + '</option>'; }).join('')
     + '</select>'
-    + '<select class="f" aria-label="Medio de pago" onchange="A.mosPago(\'medio\',this.value)">'
-    + ['Efectivo','Transferencia debito','Consignacion bancaria','Credito ACH','Debito ACH','Instrumento no definido']
-        .map(function(x){ return '<option ' + (W.medio === x ? 'selected' : '') + '>' + x + '</option>'; }).join('')
-    + '</select></div>'
+    + (W.forma === 'Credito'
+        ? '<div class="f" style="display:flex;align-items:center;color:var(--muted);font-size:13px">'
+          + 'A crédito: sin medio de pago</div>'
+        : '<select class="f" aria-label="Medio de pago" onchange="A.mosPago(\'medio\',this.value)">'
+          + ['Efectivo','Transferencia debito','Consignacion bancaria','Credito ACH','Debito ACH']
+              .map(function(x){ return '<option ' + (W.medio === x ? 'selected' : '') + '>' + x + '</option>'; }).join('')
+          + '</select>')
+    + '</div>'
     + '<p class="hint">' + (W.forma === 'Credito'
         ? 'La venta queda en cuentas por cobrar; el ingreso a caja se registra con los abonos.'
         : 'Venta de contado: registra un solo ingreso en caja.') + '</p>'
