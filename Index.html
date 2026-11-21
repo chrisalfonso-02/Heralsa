@@ -1397,7 +1397,7 @@ button,.modulo,.modulos-apoyo button,.fin-nav button{-webkit-tap-highlight-color
    Prototipo funcional de una sola página. Estado en localStorage.
    Cada objeto mapea 1:1 a una fila de las hojas R1..R4 de Google Sheets.
    ============================================================ */
-var VERSION_APP = 'v5.4.2';   /* <- lo lee verificarIndex() en el servidor. NO borrar esta línea. */
+var VERSION_APP = 'v5.5';   /* <- lo lee verificarIndex() en el servidor. NO borrar esta línea. */
 var KEY = 'heralsa.v5';   /* v5: la hoja es la única fuente de verdad. Al subir de versión cada celular bota su copia vieja y vuelve a leer la hoja. */
 var OPS = ['Hernando', 'Deyana'];
 var META = { i1:5, i2:90, i3:2, i7:95, i10:90 };
@@ -2339,11 +2339,48 @@ function tabsHtml(on){
        + t('ind','chart','Indicadores') + t('inv','box','Inventario')
        + t('esc','file','Escritorio', decidir);
 }
-function toast(m){
+/* =====================================================================
+   v5.5 · BUG_015 · UN ERROR QUE SE BORRA SOLO ES UN ERROR QUE NADIE PUEDE
+   REPORTAR
+   =====================================================================
+   LO QUE PASO, y es la razon de que este defecto tardara tanto en salir:
+   el operador emitio la remision de P-021, el aviso real se mostro 2,3
+   segundos, y antes de que pudiera leerlo entro el ciclo de fondo de 30 s
+   con «8 dato(s) de la hoja necesitan revision» y PISO el mensaje. Este
+   canal tiene una sola ranura: textContent sobreescribe y clearTimeout
+   reinicia el unico temporizador. El sistema si habia dicho lo que pasaba.
+
+   AHORA hay dos clases de aviso, porque no son la misma cosa:
+     rutinario (grave omitido)  2,3 s y se va solo, como siempre
+     GRAVE (grave === true)     se queda hasta que se toca, y NO lo puede
+                                pisar un aviso rutinario
+
+   Un aviso rutinario que llegue mientras hay uno grave en pantalla se
+   descarta: el grave manda. Entre dos graves gana el ultimo, porque el mas
+   reciente es el que el operador acaba de provocar.
+   ===================================================================== */
+var toastGrave_ = false;
+function toast(m, grave){
   var el = document.getElementById('toast');
-  document.getElementById('toastMsg').textContent = m;
+  if(!el) return;
+  if(toastGrave_ && !grave) return;        /* un aviso de rutina no tapa un error grave */
+  document.getElementById('toastMsg').textContent = (grave ? '⚠ ' : '') + m;
   el.classList.add('on');
-  clearTimeout(window._tm); window._tm = setTimeout(function(){ el.classList.remove('on'); }, 2300);
+  clearTimeout(window._tm);
+  toastGrave_ = !!grave;
+  if(grave){
+    /* queda fijo y se puede cerrar tocandolo: el CSS lo tiene con
+       pointer-events:none para que no estorbe, asi que solo mientras es
+       grave se le devuelve el toque. */
+    el.style.pointerEvents = 'auto';
+    el.style.cursor = 'pointer';
+    el.title = 'Toca para cerrar este aviso';
+    el.onclick = function(){ toastGrave_ = false; el.classList.remove('on');
+      el.style.pointerEvents = 'none'; el.onclick = null; };
+    return;
+  }
+  el.style.pointerEvents = 'none'; el.onclick = null;
+  window._tm = setTimeout(function(){ el.classList.remove('on'); }, 2300);
 }
 
 /* ============================ COMPONENTES ============================ */
@@ -3744,7 +3781,21 @@ function srv(fn, args, ok, err){
     })
     .withFailureHandler(function(e){
       var msg=e && e.message ? e.message : String(e||'');
-      if(msg.indexOf('SESIÓN_VENCIDA')>=0 && typeof mostrarLogin==='function'){ mostrarLogin('La sesión venció. Ingresa nuevamente.'); return; }
+      /* =================================================================
+         v5.5 · BUG_017 · TODA SALIDA TIENE QUE REPONER EL ESTADO
+         =================================================================
+         Antes esto hacia `return` SIN invocar err. Quien llamaba se quedaba
+         esperando para siempre: en A.facEjecutar, W.guardando queda en true
+         y el reintento muere en «Ya se esta emitiendo, espera un momento»
+         sin llamar al servidor. Sin recargar la pagina no se sale de ahi.
+         Una bandera de «operacion en vuelo» necesita un camino de salida
+         por CADA camino de entrada, incluido este.
+         ================================================================= */
+      if(msg.indexOf('SESIÓN_VENCIDA')>=0 && typeof mostrarLogin==='function'){
+        mostrarLogin('La sesión venció. Ingresa nuevamente.');
+        if(err) err(e);
+        return;
+      }
       if(err) err(e); else toast('Error del servidor: ' + msg);
     });
   var a=(args || []).slice();
@@ -11220,11 +11271,33 @@ A.mosGuardar = function(tipoDoc){
     /* Primero suben las líneas; solo después puede emitirse el documento. */
     function emitirDocumento(){
       if(!ONLINE) return;
+      /* =================================================================
+         v5.5 · BUG_014 · EL «DESHACER» QUE PODIA BORRAR UN DOCUMENTO REAL
+         =================================================================
+         Los dos caminos de fallo hacian p.doc=null y subian la fila de R4
+         para dejar las columnas del documento en blanco. En el primero
+         (r.ok falso) eso sobra: si el servidor dijo que NO, no escribio
+         nada, y ahora ademas lo comprueba releyendo la fila.
+         En el segundo -- el callback de FALLO -- era peligroso: un fallo de
+         transporte significa que la respuesta se perdio, NO que la
+         operacion no ocurriera. El documento podia estar emitido y ese
+         «deshacer» lo borraba. Un dato se repara con lo que diga la hoja,
+         no con lo que supongamos desde aqui.
+         AHORA: en el fallo no se borra nada y se vuelve a leer la hoja, que
+         es la unica que sabe si el documento quedo o no. Y como apiGuardar_
+         ya no acepta estas columnas de ninguna cola, aunque este codigo se
+         equivocara no podria borrar un documento.
+         ================================================================= */
       srv('apiDocumento', [id, tipoDoc, DB.operador, pago], function(r){
         if(r && r.ok){ p.doc={tipo:tipoDoc,numero:r.numero||'',fecha:today(),estado:r.estado,
           forma:r.forma||pago.forma,medio:r.medio||pago.medio,plazo:Number(r.plazo)||0,vence:r.vence||pago.vence}; save(); }
-        else { p.doc=null; save(); enviar(packEntrega(id)); toast((r&&r.error)||'La hoja no aceptó el documento'); }
-      }, function(e){ p.doc=null; save(); enviar(packEntrega(id)); toast('No se pudo emitir: '+(e&&e.message?e.message:e)); });
+        else { p.doc=null; save(); toast((r&&r.error)||'La hoja no aceptó el documento', true); }
+      }, function(e){
+        toast('No se pudo confirmar el documento de ' + id + ': ' + (e&&e.message?e.message:e) +
+              '. La venta quedó registrada. Se está releyendo la hoja para ver si el documento alcanzó a emitirse: ' +
+              'no vuelva a emitir hasta verlo.', true);
+        sincronizar(true);
+      });
     }
     var paquete=packPedido(id).concat(packPartes(id)).concat(packDetPrep(id)).concat(packEntrega(id));
     if(ONLINE){ DB.cola=(DB.cola||[]).concat(paquete); save(); vaciarCola(emitirDocumento); }
@@ -14110,16 +14183,40 @@ A.facEjecutar = function(){
                /* v5.3 · punto 3 · el vendedor es del documento */
                vendedor: String(W.vendedor || '').trim() };
 
-  function listo(numero, estado){
-    p.doc = { tipo:tipo, numero:numero || '', fecha:today(), estado:estado,
+  /* =====================================================================
+     v5.5 · BUG_014 · EL OBJETO HUERFANO Y LA FILA QUE BORRABA EL DOCUMENTO
+     =====================================================================
+     `p` se tomo en A.facEjecutar ANTES de llamar al servidor. La emision
+     tarda segundos, y en ese rato el ciclo de 30 s puede completar una
+     sincronizacion: hidratar() RECONSTRUYE DB.pedidos con objetos nuevos.
+     La guarda editandoAhora_() evita el repintado, pero NO evita el cambio
+     de los datos. Entonces el `p` de aqui es un objeto huerfano: ya no es
+     el que esta en DB.pedidos.
+     CONSECUENCIA MEDIDA en la fila 22 de la hoja: se escribia p.doc en el
+     huerfano, y packEntrega leia el objeto NUEVO -- sin documento -- y
+     subia la fila de R4 con las ocho columnas del documento VACIAS,
+     borrando lo que el servidor acababa de escribir bien.
+     DOS CAMBIOS, y los dos hacen falta:
+       1. se vuelve a buscar el pedido AQUI, dentro del callback, en vez de
+          confiar en la referencia que se tomo antes de la llamada;
+       2. cuando el numero viene del SERVIDOR, no se sube nada: esa fila ya
+          la escribio el servidor, que es su dueño. Solo se encola en el
+          camino sin conexion, donde la cola es la unica via.
+     La red de seguridad definitiva esta en el servidor (apiGuardar_ ya no
+     acepta esas columnas de ninguna cola), porque el navegador vive en
+     cache y un dispositivo sin actualizar seguiria borrando.
+     ===================================================================== */
+  function listo(numero, estado, delServidor){
+    var pv = pedido(pid) || p;
+    pv.doc = { tipo:tipo, numero:numero || '', fecha:today(), estado:estado,
               forma:pago.forma, medio:pago.medio, plazo:pago.plazo, vence:pago.vence,
               vendedor:pago.vendedor };
     save();
-    enviar(packEntrega(pid));
-    var f = facturaDe(p);
+    if(!delServidor) enviar(packEntrega(pid));
+    var f = facturaDe(pv);
     swap('ok', {
       t: tipo === 'REMISION' ? ('Remision ' + numero) : 'Queda por facturar',
-      p: pid + ' · ' + esc(p.cliente),
+      p: pid + ' · ' + esc(pv.cliente),
       lead:'<div class="lead"><div class="d" style="color:var(--ve)">' + money(f.total) + '</div>'
         + '<div class="x">' + esc(pago.forma)
         + (pago.plazo ? '<br>vence ' + dmy(pago.vence) : '') + '</div></div>',
@@ -14132,7 +14229,7 @@ A.facEjecutar = function(){
       foot:'<div class="row2">'
         + '<button class="btn gho sm" onclick="go(\'fact\',{id:\'' + pid + '\'})">'
         + '<svg class="i sm"><use href="#i-file"/></svg> Imprimir</button>'
-        + (p.estado !== 'ENTREGADO'
+        + (pv.estado !== 'ENTREGADO'
           ? '<button class="btn pri sm" onclick="A.enStart(\'' + pid + '\')">'
             + '<svg class="i sm"><use href="#i-truck"/></svg> Entregar ahora</button>' : '')
         + '</div>'
@@ -14154,14 +14251,19 @@ A.facEjecutar = function(){
 
   srv('apiDocumento', [pid, tipo, DB.operador, pago], function(r){
     W.guardando = false;
-    if(!r || !r.ok){ toast((r && r.error) || 'La hoja no acepto el documento'); render(); return; }
+    /* v5.5 · BUG_015 · esto es un error GRAVE: NO se emitio el documento.
+       Va con aviso fijo, que no se borra solo a los 2,3 segundos ni lo pisa
+       el aviso rutinario del ciclo de sincronizacion. */
+    if(!r || !r.ok){ toast((r && r.error) || 'La hoja no acepto el documento', true); render(); return; }
     /* v5.3 · el servidor avisa si le falta la columna del vendedor: se dice en
        lugar de dejar creer que quedo guardado. */
     if(r.avisoColumna) toast(r.avisoColumna);
-    listo(r.numero, r.estado);
+    /* v5.5 · tercer argumento: el numero y la fila vienen del SERVIDOR, que
+       ya los escribio. No se vuelve a subir la fila de R4. */
+    listo(r.numero, r.estado, true);
   }, function(e){
     W.guardando = false;
-    toast('No se pudo emitir: ' + (e && e.message ? e.message : e));
+    toast('No se pudo emitir: ' + (e && e.message ? e.message : e), true);
     render();
   });
 };
