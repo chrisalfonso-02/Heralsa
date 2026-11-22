@@ -2082,7 +2082,7 @@ function cerrarHuecosMigracion(soloSimular){
 }
 
 /* ===================== PRUEBA Y DIAGNOSTICO ===================== */
-var VERSION_BACKEND = 'v5.5.5';
+var VERSION_BACKEND = 'v5.5.6';
 
 /**
  * Lee el archivo Index.html REAL del proyecto y dice si quedo bien pegado.
@@ -4235,7 +4235,7 @@ function apiAnalisisFinanciero(token){
 /** Ejecutar esta. Dice si los tres archivos quedaron bien pegados. */
 function heralsaVersion(){
   Logger.log('=========== VERSIONES ===========');
-  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.5.5');
+  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.5.6');
   Logger.log('Fase 2    : ' + VERSION_FASE2 + '      <- debe decir f2.2');
   var vIndex = null, largo = 0, cierra = false;
   try{
@@ -4243,7 +4243,7 @@ function heralsaVersion(){
     largo  = t.length;
     vIndex = (t.match(/VERSION_APP\s*=\s*'([^']+)'/) || [])[1] || null;
     cierra = t.replace(/\s+$/, '').slice(-7) === '</html>';
-    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.5.5');
+    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.5.6');
     Logger.log('Termina en </html>: ' + (cierra ? 'SI' : 'NO  *** QUEDO CORTADO AL PEGAR ***'));
     /* El tamano que devuelve getContent() NO coincide con el del archivo
        fuente: HtmlService no entrega el texto literal. Comparar tamanos aqui
@@ -4258,7 +4258,7 @@ function heralsaVersion(){
   }
   Logger.log('---------------------------------');
   if(vIndex === VERSION_BACKEND && cierra)
-    Logger.log('>>> TODO PAREJO EN v5.5.5. El codigo esta bien pegado.');
+    Logger.log('>>> TODO PAREJO EN v5.5.6. El codigo esta bien pegado.');
   else if(vIndex && vIndex !== VERSION_BACKEND)
     Logger.log('>>> NO COINCIDEN. Vuelva a pegar el archivo que se quedo atras.');
   else
@@ -5595,9 +5595,55 @@ function heralsaRecalcularIndicadores(){
 function heralsaLimpiarParaProduccion(){
   var CONFIRMACION = '';     /* <- para borrar de verdad, escriba aqui: BORRAR DATOS DE PRUEBA */
 
-  var operativas = [H.compras, H.detalle, H.prep, H.prepDet, H.pedidos, H.entregas, H.mov, 'MOV_Caja', H.log];
-  var conserva   = [H.productos, H.clientes, H.proveedores, H.materias, H.cfg, 'CAT_Usuarios'];
+  /* =====================================================================
+     v5.5.6 · BUG_032 · LA LIMPIEZA SE OLVIDO DE DOS HOJAS
+     =====================================================================
+     LO QUE PASO, y lo vio el usuario en su propio registro: despues de
+     limpiar, heralsaRevisarLogica dijo «las 4 venta(s) de mostrador
+     cuadran con sus lineas». Quedaban 4 ventas en un libro que debia estar
+     vacio, porque MOS_Ventas y MOS_Detalle NO ESTABAN EN NINGUNA DE LAS
+     DOS LISTAS: ni en la que borra ni en la que conserva. Se olvidaron.
+
+     Y era lo peor posible: una venta de mostrador escribe en CUATRO
+     sitios -- MOS_Ventas, MOS_Detalle, MOV_Inventario y MOV_Caja. Se
+     borraron los dos ultimos y se dejaron los dos primeros, asi que
+     quedaron 4 ventas cuyo dinero y cuyo movimiento de inventario ya no
+     existen. La simulacion no las mencionaba, asi que el operador no
+     podia enterarse ni leyendola con cuidado.
+
+     LA CORRECCION DE RAIZ no es añadir dos nombres a una lista: es que la
+     funcion ya NO PUEDA olvidar una hoja. Ahora recorre TODAS las hojas
+     del libro y exige que cada una este clasificada. Si encuentra una que
+     no conoce, NO BORRA NADA y dice cual es. El dia que alguien agregue
+     una hoja, esta funcion se detiene y pregunta en vez de dejarla atras
+     en silencio.
+     ===================================================================== */
+  var operativas = [H.compras, H.detalle, H.prep, H.prepDet, H.pedidos, H.entregas, H.mov, 'MOV_Caja', H.log,
+                    H_MOS, H_MOS_DET];
+  var conserva   = [H.productos, H.clientes, H.proveedores, H.materias, H.cfg, 'CAT_Usuarios',
+                    'TABLERO', 'LEEME'];
   var ss = libro();
+
+  var sinClasificar = [];
+  ss.getSheets().forEach(function(sh){
+    var n = sh.getName();
+    if(operativas.indexOf(n) < 0 && conserva.indexOf(n) < 0) sinClasificar.push(n);
+  });
+  if(sinClasificar.length){
+    Logger.log('===== LIMPIEZA DETENIDA · NO SE BORRO NADA =====');
+    Logger.log('');
+    Logger.log('Hay hoja(s) que esta funcion no sabe clasificar:');
+    sinClasificar.forEach(function(n){
+      var sh = ss.getSheetByName(n);
+      Logger.log('   ' + n + ': ' + (sh ? Math.max(0, sh.getLastRow()-1) : 0) + ' fila(s)');
+    });
+    Logger.log('');
+    Logger.log('>>> No se borra nada hasta decidir que hacer con ellas. Una hoja sin');
+    Logger.log('>>> clasificar en un «empezar de cero» es exactamente el defecto que');
+    Logger.log('>>> dejo 4 ventas de mostrador huerfanas la vez anterior.');
+    Logger.log('>>> Mande esta lista y se clasifican en una de las dos listas.');
+    return { ok:false, sin_clasificar:sinClasificar };
+  }
 
   Logger.log('===== LIMPIEZA PARA PRODUCCION =====');
   Logger.log('');
@@ -6611,6 +6657,56 @@ function heralsaRevisarLogica(){
     cajaSinDoc.map(function(m){ return txt(m.Caja_num) + '->' + txt(m.Origen_doc); }).slice(0,6).join(' · '));
   else OK('todo ingreso de caja apunta a un documento que existe');
 
+  /* =====================================================================
+     v5.5.6 · BUG_033 · LA COMPROBACION QUE SOLO MIRABA HACIA UN LADO
+     =====================================================================
+     TODO lo de arriba pregunta «¿el origen de este movimiento existe?».
+     NADIE preguntaba lo contrario: «¿esta venta dejo su rastro?». Y con
+     una de las dos hojas vacia, la pregunta de un solo lado es
+     VERDADERA POR FALTA DE DATOS.
+
+     ASI SE ESCAPO, y lo vio el usuario y no yo: despues de limpiar la base
+     quedaron 4 ventas de mostrador cuyo dinero y cuyo movimiento de
+     inventario SI se habian borrado. Esta revision dijo «la estructura
+     esta consistente» con 0 fallos, porque «todo ingreso de caja apunta a
+     un documento que existe» es cierto cuando no hay ningun ingreso de
+     caja. Un verificador que aprueba un libro incoherente es peor que no
+     tener verificador.
+
+     LA REGLA: toda comprobacion de relacion se hace en LAS DOS
+     direcciones. Si una venta se cobro, su dinero tiene que estar; si
+     saco unidades, el kardex tiene que decirlo.
+     ===================================================================== */
+  var ingPorDoc_ = {};
+  caja.forEach(function(m){
+    if(txt(m[COL_EST]).toUpperCase() === E_ANU) return;
+    if(txt(m.Tipo_mov).toUpperCase() !== 'INGRESO_VENTA') return;
+    ingPorDoc_[txt(m.Origen_doc)] = true;
+  });
+
+  /* ventas de mostrador de contado SIN su ingreso en caja */
+  var mosSinCaja = mosV.filter(function(v){
+    if(txt(v[COL_EST]).toUpperCase() === E_ANU) return false;
+    if(txt(v.Forma_pago).toUpperCase().indexOf('CRED') === 0) return false;   /* a credito no entra en caja */
+    return !ingPorDoc_[txt(v.M_num)];
+  });
+  if(mosSinCaja.length) F('hay ' + mosSinCaja.length + ' venta(s) de mostrador de contado SIN su ingreso en caja: ' +
+    mosSinCaja.map(function(v){ return txt(v.M_num); }).slice(0,8).join(' · ') +
+    '. Se cobro dinero que la caja no tiene registrado.');
+  else OK('toda venta de mostrador de contado tiene su ingreso en caja');
+
+  /* documentos de pedido de contado SIN su ingreso en caja */
+  var docSinCaja = ents.filter(function(e){
+    if(txt(e[COL_EST]).toUpperCase() === E_ANU) return false;
+    if(!txt(e.Doc_tipo)) return false;
+    if(txt(e.Forma_pago).toUpperCase().indexOf('CRED') === 0) return false;
+    return !ingPorDoc_[txt(e.P_num)];
+  });
+  if(docSinCaja.length) F('hay ' + docSinCaja.length + ' documento(s) de pedido de contado SIN su ingreso en caja: ' +
+    docSinCaja.map(function(e){ return txt(e.P_num) + ' ' + txt(e.Doc_numero); }).slice(0,8).join(' · ') +
+    '. El documento dice que se cobro y la caja no lo tiene.');
+  else OK('todo documento de pedido de contado tiene su ingreso en caja');
+
   /* ---- 6 · kardex ---- */
   Logger.log('');
   Logger.log('--- 6 · KARDEX ---');
@@ -6665,6 +6761,28 @@ function heralsaRevisarLogica(){
     });
     if(descuadra.length) F('el total de la venta no cuadra con sus lineas en: ' + descuadra.slice(0,6).join(' · '));
     else OK('las ' + cuadra.length + ' venta(s) de mostrador cuadran con sus lineas');
+
+    /* v5.5.6 · BUG_033 · la otra direccion: la venta saco unidades de
+       bodega, asi que el kardex tiene que decirlo. Los especiales no
+       cuentan: no entraron nunca a bodega y por eso no mueven kardex. */
+    var kardexPorDoc_ = {};
+    movs.forEach(function(m){
+      if(txt(m[COL_EST]).toUpperCase() === E_ANU) return;
+      kardexPorDoc_[txt(m.Origen_doc)] = true;
+    });
+    var mosSinKardex = mosV.filter(function(v){
+      if(txt(v[COL_EST]).toUpperCase() === E_ANU) return false;
+      var lin = mosD.filter(function(d){
+        return txt(d.M_num) === txt(v.M_num) && txt(d[COL_EST]).toUpperCase() !== E_ANU
+               && txt(d.Es_especial) !== 'S';
+      });
+      if(!lin.length) return false;        /* solo especiales: no mueve kardex, es correcto */
+      return !kardexPorDoc_[txt(v.M_num)];
+    });
+    if(mosSinKardex.length) F('hay ' + mosSinKardex.length + ' venta(s) de mostrador que sacaron producto de catalogo ' +
+      'y NO dejaron movimiento en el kardex: ' + mosSinKardex.map(function(v){ return txt(v.M_num); }).slice(0,8).join(' · ') +
+      '. El saldo de inventario esta mas alto que la realidad.');
+    else OK('toda venta de mostrador con producto de catalogo dejo su movimiento de kardex');
   }
 
   /* ---- 8 · PUNTO 4 · el catalogo no se edita desde Facturacion ---- */
