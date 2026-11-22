@@ -2082,7 +2082,7 @@ function cerrarHuecosMigracion(soloSimular){
 }
 
 /* ===================== PRUEBA Y DIAGNOSTICO ===================== */
-var VERSION_BACKEND = 'v5.5.4';
+var VERSION_BACKEND = 'v5.5.5';
 
 /**
  * Lee el archivo Index.html REAL del proyecto y dice si quedo bien pegado.
@@ -4235,7 +4235,7 @@ function apiAnalisisFinanciero(token){
 /** Ejecutar esta. Dice si los tres archivos quedaron bien pegados. */
 function heralsaVersion(){
   Logger.log('=========== VERSIONES ===========');
-  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.5.4');
+  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.5.5');
   Logger.log('Fase 2    : ' + VERSION_FASE2 + '      <- debe decir f2.2');
   var vIndex = null, largo = 0, cierra = false;
   try{
@@ -4243,7 +4243,7 @@ function heralsaVersion(){
     largo  = t.length;
     vIndex = (t.match(/VERSION_APP\s*=\s*'([^']+)'/) || [])[1] || null;
     cierra = t.replace(/\s+$/, '').slice(-7) === '</html>';
-    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.5.4');
+    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.5.5');
     Logger.log('Termina en </html>: ' + (cierra ? 'SI' : 'NO  *** QUEDO CORTADO AL PEGAR ***'));
     /* El tamano que devuelve getContent() NO coincide con el del archivo
        fuente: HtmlService no entrega el texto literal. Comparar tamanos aqui
@@ -4258,7 +4258,7 @@ function heralsaVersion(){
   }
   Logger.log('---------------------------------');
   if(vIndex === VERSION_BACKEND && cierra)
-    Logger.log('>>> TODO PAREJO EN v5.5.4. El codigo esta bien pegado.');
+    Logger.log('>>> TODO PAREJO EN v5.5.5. El codigo esta bien pegado.');
   else if(vIndex && vIndex !== VERSION_BACKEND)
     Logger.log('>>> NO COINCIDEN. Vuelva a pegar el archivo que se quedo atras.');
   else
@@ -5150,6 +5150,46 @@ function cohPedido_(pid, ctx){
   var ent    = (ctx ? ctx.entPorNum[pid] : buscarEn(filas(H.entregas), 'P_num', pid)) || {};
   var tc = txt(p.tc) || txt((partes[0]||{}).tc);
   var tl = txt((partes[0]||{}).tl);
+
+  /* =====================================================================
+     v5.5.5 · BUG_031 · LAS TRES COPIAS DE LA FECHA DE CIERRE
+     =====================================================================
+     POR QUE HACE FALTA ESTA COMPROBACION, y lo descubri cruzando dos
+     registros del usuario que parecian contradecirse:
+
+       heralsaRevisarCoherencia : «P-012 · la entrega (te) es anterior al
+                                  cierre (tl)»  -> ERROR
+       indicador 8 (entrega)    : 0,5 dias con n=4, SIN ningun negativo
+
+     Las dos cosas eran ciertas a la vez porque NO leen la misma celda. La
+     fecha de cierre vive en TRES sitios:
+         R2_Preparacion.tl        <- lo lee el indicador 4 y esta revision
+         R4_Entregas.tl           <- lo lee el indicador 8
+         R3_Pedidos.Fecha_real_listo <- lo lee la guarda de la entrega
+     El cierre las escribe LAS TRES con el mismo valor y en la misma
+     operacion, asi que desde un libro limpio nacen identicas. Pero si
+     alguna se edita a mano, o viene de una version anterior -- que es el
+     caso de P-012 --, dos indicadores miden desde copias distintas y
+     NADIE lo avisa. Un numero que depende de cual copia se leyo no es un
+     numero: es una coincidencia.
+
+     No se cambia el esquema a estas alturas: eso es una decision del
+     usuario y hacerlo justo antes de limpiar la base añade riesgo sin
+     necesidad. Lo que si se hace es DECIRLO cuando pase, para que no
+     pueda volver a esconderse.
+     ===================================================================== */
+  var tl3 = txt(p.Fecha_real_listo), tl4 = txt(ent.tl);
+  var copiasTl = [['R2_Preparacion.tl', tl], ['R3.Fecha_real_listo', tl3], ['R4_Entregas.tl', tl4]]
+                 .filter(function(x){ return x[1]; });
+  if(copiasTl.length > 1){
+    var dia0 = copiasTl[0][1].substr(0,10);
+    var discrepan = copiasTl.filter(function(x){ return x[1].substr(0,10) !== dia0; });
+    if(discrepan.length)
+      errores.push(pid + ' tiene la fecha de cierre distinta en cada hoja: ' +
+        copiasTl.map(function(x){ return x[0] + ' = ' + x[1]; }).join(' · ') +
+        '. Los indicadores 4 y 8 miden desde copias distintas, asi que dan numeros que no se pueden comparar. ' +
+        'Hay que dejar una sola fecha: la del cierre real.');
+  }
 
   /* ---- estado contra hechos ---- */
   if(estado === 'LISTO' || estado === 'ENTREGADO'){
