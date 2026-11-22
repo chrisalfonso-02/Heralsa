@@ -1397,7 +1397,7 @@ button,.modulo,.modulos-apoyo button,.fin-nav button{-webkit-tap-highlight-color
    Prototipo funcional de una sola página. Estado en localStorage.
    Cada objeto mapea 1:1 a una fila de las hojas R1..R4 de Google Sheets.
    ============================================================ */
-var VERSION_APP = 'v5.5.7';   /* <- lo lee verificarIndex() en el servidor. NO borrar esta línea. */
+var VERSION_APP = 'v5.5.8';   /* <- lo lee verificarIndex() en el servidor. NO borrar esta línea. */
 var KEY = 'heralsa.v5';   /* v5: la hoja es la única fuente de verdad. Al subir de versión cada celular bota su copia vieja y vuelve a leer la hoja. */
 var OPS = ['Hernando', 'Deyana'];
 var META = { i1:5, i2:90, i3:2, i7:95, i10:90 };
@@ -14761,9 +14761,7 @@ vaciarCola=function(cb){
   if(DB.colaPre.length){
     var job=DB.colaPre[0];SYNC.estado='enviando';pintarSync();
     srv('apiPreparacion',[job.pid,job.accion,job.datos],function(r){
-      if(!r||!r.ok){pendiente();toast('La preparación sigue en cola: '+((r&&r.error)||'la hoja no confirmó el cambio'),true);return;}
-      /* v5.5.7 · BUG_034 · el mismo aviso cuando la accion sube por la cola */
-      if(r.avisos&&r.avisos.length)toast(r.avisos.join(' · '),true);
+      if(!r||!r.ok){pendiente();toast('La preparación sigue en cola: '+((r&&r.error)||'la hoja no confirmó el cambio'));return;}
       DB.colaPre.shift();save();continuar();
     },function(e){
       var msg=e&&e.message?e.message:String(e||'');
@@ -15507,11 +15505,6 @@ function preEnviar(accion,extra,destino){
   W.guardando=true;bloquearPie('Guardando…');
   srv('apiPreparacion',[W.pid,accion,datos],function(r){
     if(!r||!r.ok)throw new Error((r&&r.error)||'La hoja no confirmó la acción.');
-    /* v5.5.7 · BUG_034 · la discrepancia de inventario NO bloquea la venta
-       (invariante I-19), pero el operador tiene que verla. Va como aviso
-       grave: se queda hasta que la toque, porque implica que el saldo de
-       ese producto esta mal y hay que contarlo. */
-    if(r.avisos && r.avisos.length) toast(r.avisos.join(' · '), true);
     W.guardando=false;var p=prePedido();
     if(p)p.revision=Math.max(0,Number(r.revision||1)-1);
     if(!preLocal(accion,datos,destino)){preRecargar(W.pid,r.etapa);return;}
