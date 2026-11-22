@@ -1182,6 +1182,8 @@ function apiPreparacion_(pid, accion, datos, operador){
     var actuales = actualesTodas.filter(function(r){return txt(r.Estado_registro).toUpperCase() !== E_ANU;});
     var productos = preparacionProductos_(), canal = txt(cab.Canal).toUpperCase() === 'R' ? 'R' : 'M';
     var marca = ahora(), nuevaEtapa = etapa;
+    /* v5.5.7 · BUG_034 · canal para las discrepancias que NO bloquean */
+    var avisosPrep_ = [];
 
     if(accion === 'GUARDAR'){
       if(!Array.isArray(datos.lineas)) throw new Error('La lista de productos no es valida.');
@@ -1218,10 +1220,56 @@ function apiPreparacion_(pid, accion, datos, operador){
       if(!actualV) throw new Error(codV + ': primero guarda la cantidad solicitada en Organizar o en Agregar producto.');
       var nV = numero(actualV.Cant_solicitada), wV = numero(l.w);
       if(txt(l.w) === '' || wV < 0 || wV > nV || Math.floor(wV) !== wV) throw new Error(codV + ': despachadas debe estar entre 0 y ' + nV + '.');
+      /* =================================================================
+         v5.5.7 · BUG_034 · EL CODIGO HACIA LO CONTRARIO DE SU PROPIA REGLA
+         =================================================================
+         AQUI HABIA UN throw: si el saldo no alcanzaba, el despacho se
+         caia. Y el invariante I-19 de este mismo sistema, escrito en tres
+         sitios del Index, dice literalmente lo contrario:
+
+           «nunca se bloquea una venta por falta de stock. Se registra la
+            discrepancia y el producto queda marcado como no confiable.
+            Un sistema de inventario no debe tener autoridad para cancelar
+            una venta: el saldo probablemente este mal, y el dato malo se
+            corrige, la venta no se pierde. LA APP ANTERIOR DE LA EMPRESA
+            HACIA LO CONTRARIO Y POR ESO UNA VENTA REAL SE CAIA POR CULPA
+            DE UN INVENTARIO DESACTUALIZADO.»
+
+         Es decir: el defecto que la regla nombra como el motivo de haber
+         cambiado de aplicacion estaba otra vez dentro del codigo. Y la
+         opcion que deberia gobernarlo, permitir_venta_sin_stock, estaba
+         DECLARADA Y VALIDADA PERO NUNCA LEIDA: configuracion muerta que la
+         pantalla le mostraba al operador como si decidiera algo. La app
+         decia «si se permite vender sin stock» y el servidor lo prohibia.
+
+         AHORA la discrepancia se REGISTRA y no bloquea:
+           · se devuelve como aviso al operador, en el momento
+           · queda en LOG_Cambios, que es el registro permanente que pide
+             el invariante
+           · apiMover_ ya devuelve los codigos que quedan en negativo y la
+             app ya los muestra: la cadena de abajo existia, lo unico que
+             habia era esta puerta cerrada antes de llegar a ella.
+
+         LO QUE NO HAGO Y DIGO POR QUE: «marcar el producto como no
+         confiable» necesita una columna propia. Reutilizar
+         Requiere_revision seria mezclarlo con la revision de CALIDAD, que
+         es otra cosa y vive al lado de Observacion_calidad. Inventar un
+         significado nuevo para una columna existente es como se crean las
+         incoherencias que llevamos semanas sacando. Queda pendiente de
+         decidir donde vive esa marca.
+         ================================================================= */
       if(preparacionConfig_('inventario_modo') === 'SHEETS'){
         var saldoInfo = apiSaldos_();
         var saldo = numero(saldoInfo.saldos[codV]);
-        if(wV > Math.max(saldo,0)) throw new Error(codV + ': el inventario tiene ' + saldo + '; no puedes despachar ' + wV + ' en modo SHEETS.');
+        if(wV > Math.max(saldo,0)){
+          var falta_ = wV - Math.max(saldo,0);
+          avisosPrep_.push(codV + ': el inventario dice ' + saldo + ' y se despacharon ' + wV +
+            ' (' + falta_ + ' mas de lo que hay). No se bloqueo la venta: el saldo probablemente este mal. ' +
+            'Revise el inventario de ' + codV + '.');
+          apiLogCambio_([{ Tabla:'MOV_Inventario', Registro:codV, Campo:'Saldo_vs_despacho',
+            Valor_antes:'saldo ' + saldo, Valor_despues:'despachadas ' + wV + ' en ' + pid,
+            Motivo:'I-19 · discrepancia de inventario registrada, la venta NO se bloqueo' }], operador);
+        }
       }
       var parteV = txt(actualV.Tipo).toUpperCase();
       var origenAnterior=txt(actualV.Como_se_suple).toUpperCase();
@@ -1328,6 +1376,7 @@ function apiPreparacion_(pid, accion, datos, operador){
        desalineados por un corte a mitad de camino. */
     escribirFila({hoja:H.pedidos,atomico:true,claves:[{columna:'P_num',valor:pid}],fila:f3});
     var resultado={ok:true,id:pid,etapa:nuevaEtapa,revision:revision + 1,lineas:despues.length};
+    if(avisosPrep_.length) resultado.avisos = avisosPrep_;   /* v5.5.7 · BUG_034 */
     preparacionGuardarComprobante_(pid,solicitud,accion,resultado,operador);
     return resultado;
   }finally{lock.releaseLock();}
@@ -2082,7 +2131,7 @@ function cerrarHuecosMigracion(soloSimular){
 }
 
 /* ===================== PRUEBA Y DIAGNOSTICO ===================== */
-var VERSION_BACKEND = 'v5.5.6';
+var VERSION_BACKEND = 'v5.5.7';
 
 /**
  * Lee el archivo Index.html REAL del proyecto y dice si quedo bien pegado.
@@ -2679,7 +2728,13 @@ function apiGuardarConfig_(clave, valor, operador){
   var validos = {
     inventario_modo: ['SHEETS', 'OPERADOR'],
     mostrar_iva: ['S', 'N'],
-    permitir_venta_sin_stock: ['S', 'N'],
+    /* v5.5.7 · BUG_034 · solo 'S'. Antes admitia 'N' y NADIE leia el valor:
+       se podia guardar «no permitir venta sin stock» y el sistema seguia
+       permitiendola, porque el invariante I-19 dice que nunca se bloquea una
+       venta por falta de stock. Una opcion que se puede cambiar y no cambia
+       nada es una mentira guardada en la hoja. El navegador ya la muestra
+       como no conmutable; ahora el servidor dice lo mismo. */
+    permitir_venta_sin_stock: ['S'],
     doc_offline: ['REMISION']          /* I-21: no hay otra opcion posible */
   };
   if(validos[clave] && validos[clave].indexOf(txt(valor).toUpperCase()) < 0)
@@ -4235,7 +4290,7 @@ function apiAnalisisFinanciero(token){
 /** Ejecutar esta. Dice si los tres archivos quedaron bien pegados. */
 function heralsaVersion(){
   Logger.log('=========== VERSIONES ===========');
-  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.5.6');
+  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.5.7');
   Logger.log('Fase 2    : ' + VERSION_FASE2 + '      <- debe decir f2.2');
   var vIndex = null, largo = 0, cierra = false;
   try{
@@ -4243,7 +4298,7 @@ function heralsaVersion(){
     largo  = t.length;
     vIndex = (t.match(/VERSION_APP\s*=\s*'([^']+)'/) || [])[1] || null;
     cierra = t.replace(/\s+$/, '').slice(-7) === '</html>';
-    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.5.6');
+    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.5.7');
     Logger.log('Termina en </html>: ' + (cierra ? 'SI' : 'NO  *** QUEDO CORTADO AL PEGAR ***'));
     /* El tamano que devuelve getContent() NO coincide con el del archivo
        fuente: HtmlService no entrega el texto literal. Comparar tamanos aqui
@@ -4258,7 +4313,7 @@ function heralsaVersion(){
   }
   Logger.log('---------------------------------');
   if(vIndex === VERSION_BACKEND && cierra)
-    Logger.log('>>> TODO PAREJO EN v5.5.6. El codigo esta bien pegado.');
+    Logger.log('>>> TODO PAREJO EN v5.5.7. El codigo esta bien pegado.');
   else if(vIndex && vIndex !== VERSION_BACKEND)
     Logger.log('>>> NO COINCIDEN. Vuelva a pegar el archivo que se quedo atras.');
   else
