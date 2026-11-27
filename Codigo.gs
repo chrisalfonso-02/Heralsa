@@ -271,7 +271,23 @@ function apiEstado_(ligero){
    ===================================================================== */
 function filas(nombreHoja){
   var sh = libro().getSheetByName(nombreHoja);
-  if(!sh) return [];
+  /* =====================================================================
+     v5.6.1 · EL ATAJO DE LA HOJA VACIA, QUE YO HABIA QUITADO
+     =====================================================================
+     Lo delato el A/B con datos reales: en las cinco hojas con contenido la
+     lectura nueva gano entre 23 % y 54 %, pero en R1_Compras, que esta
+     VACIA, perdio 170 % -- de 69 ms a 186 ms.
+     La causa: la version anterior se salia aqui mismo, con getLastRow(), y
+     NO pedia datos nunca. La mia pedia el rango completo y despues
+     comprobaba que estuviera vacio: una transferencia entera para
+     descubrir que no habia nada que leer.
+     getLastRow() es metadato y Apps Script lo cachea dentro de la
+     ejecucion, asi que preguntarlo cuesta casi nada. Vuelve el atajo: lo
+     barato primero, y el rango de datos solo si hay datos.
+     En un libro recien limpiado la mayoria de las hojas estan vacias, asi
+     que esto no es un caso raro: es el caso normal al empezar.
+     ===================================================================== */
+  if(!sh || sh.getLastRow() < 2) return [];
   var todo = sh.getDataRange().getValues();
   if(todo.length < 2) return [];
   var cols = todo[0], tz = tzLibro_(), out = [];
@@ -2144,7 +2160,7 @@ function cerrarHuecosMigracion(soloSimular){
 }
 
 /* ===================== PRUEBA Y DIAGNOSTICO ===================== */
-var VERSION_BACKEND = 'v5.6';
+var VERSION_BACKEND = 'v5.6.1';
 
 /**
  * Lee el archivo Index.html REAL del proyecto y dice si quedo bien pegado.
@@ -4297,7 +4313,7 @@ function apiAnalisisFinanciero(token){
 /** Ejecutar esta. Dice si los tres archivos quedaron bien pegados. */
 function heralsaVersion(){
   Logger.log('=========== VERSIONES ===========');
-  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.6');
+  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.6.1');
   Logger.log('Fase 2    : ' + VERSION_FASE2 + '      <- debe decir f2.2');
   var vIndex = null, largo = 0, cierra = false;
   try{
@@ -4305,7 +4321,7 @@ function heralsaVersion(){
     largo  = t.length;
     vIndex = (t.match(/VERSION_APP\s*=\s*'([^']+)'/) || [])[1] || null;
     cierra = t.replace(/\s+$/, '').slice(-7) === '</html>';
-    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.6');
+    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.6.1');
     Logger.log('Termina en </html>: ' + (cierra ? 'SI' : 'NO  *** QUEDO CORTADO AL PEGAR ***'));
     /* El tamano que devuelve getContent() NO coincide con el del archivo
        fuente: HtmlService no entrega el texto literal. Comparar tamanos aqui
@@ -4320,7 +4336,7 @@ function heralsaVersion(){
   }
   Logger.log('---------------------------------');
   if(vIndex === VERSION_BACKEND && cierra)
-    Logger.log('>>> TODO PAREJO EN v5.6. El codigo esta bien pegado.');
+    Logger.log('>>> TODO PAREJO EN v5.6.1. El codigo esta bien pegado.');
   else if(vIndex && vIndex !== VERSION_BACKEND)
     Logger.log('>>> NO COINCIDEN. Vuelva a pegar el archivo que se quedo atras.');
   else
