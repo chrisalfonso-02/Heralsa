@@ -523,3 +523,146 @@ function heralsaPublicarSnapshot(){
   if(ok1) L('>>> puede comparar el antes y el despues de cualquier operacion.');
   return { ok: ok1, repositorio: repo, hojas: copiadas.length, omitidas: omitidas, sello: sello };
 }
+
+
+/* =====================================================================
+   HERALSA · DE DONDE SALEN LOS SEGUNDOS
+   =====================================================================
+   SOLO LEE. No escribe, no borra, no toca la configuracion.
+
+   PARA QUE: cada accion tarda entre 2 y 5 segundos y hay que bajarlo. Eso
+   puede venir de TRES sitios distintos, con tres soluciones distintas:
+
+     1. EL PESO DE LA RESPUESTA · cuantos caracteres viajan del servidor al
+        navegador en cada sincronizacion. Se arregla mandando menos:
+        sincronizacion incremental y no reenviar los catalogos.
+     2. EL COSTE DE LEER LA HOJA · cuanto tarda el servidor en armar esa
+        respuesta. Se arregla leyendo menos hojas y menos veces.
+     3. LA LATENCIA FIJA DE APPS SCRIPT · el ida y vuelta de un
+        google.script.run cuesta entre medio segundo y dos, SIN IMPORTAR el
+        tamaño. Esto NO se arregla optimizando: solo se arregla no
+        esperandolo (que la pantalla responda ya y la escritura viaje
+        detras) o cambiando de plataforma.
+
+   Si el peso y la lectura son pequeños y el tiempo igual se siente, el
+   culpable es el 3 y optimizar consultas no va a servir de nada. Por eso
+   se mide ANTES de decidir.
+
+   COMO SE USA: haga clic en «Diagnostico» en la lista de archivos, elija
+   heralsaMedirCarga en el desplegable y ejecute. Mande el registro.
+   ===================================================================== */
+
+function heralsaMedirCarga(){
+  function L(s){ Logger.log(s === undefined ? '' : s); }
+  function ms(){ return new Date().getTime(); }
+  function miles(n){ return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, '.'); }
+
+  L('===== DE DONDE SALEN LOS SEGUNDOS · solo lectura =====');
+  L('Libro: ' + libro().getName() + ' · ' + ahora());
+  L('');
+
+  /* ---------------------------------------------------------------
+     1 · COSTE DE LEER CADA HOJA, UNA POR UNA
+     --------------------------------------------------------------- */
+  L('--- 1 · cuanto cuesta leer cada hoja (filas()) ---');
+  L('hoja                     filas     ms     caracteres');
+  var hojas = [H.compras, H.detalle, H.prep, H.prepDet, H.pedidos, H.entregas,
+               H.mov, 'MOV_Caja', H.cfg, H.log, H.productos, H.clientes,
+               H.proveedores, H.materias];
+  var totalMs = 0, totalChar = 0, detalle = [];
+  hojas.forEach(function(n){
+    var t0 = ms();
+    var f = filas(n);
+    var dt = ms() - t0;
+    var ch = JSON.stringify(f).length;
+    totalMs += dt; totalChar += ch;
+    detalle.push({ hoja:n, filas:f.length, ms:dt, ch:ch });
+    L('  ' + (n + '                        ').slice(0, 24) +
+      ('     ' + f.length).slice(-6) + '  ' +
+      ('     ' + dt).slice(-6) + '  ' +
+      ('            ' + miles(ch)).slice(-13));
+  });
+  L('  ' + '------------------------------------------------------');
+  L('  TOTAL                   ' + ('     ' + '').slice(-6) + '  ' +
+    ('     ' + totalMs).slice(-6) + '  ' + ('            ' + miles(totalChar)).slice(-13));
+  L('');
+
+  /* ---------------------------------------------------------------
+     2 · LA RESPUESTA QUE VIAJA AL NAVEGADOR
+     Es lo que de verdad se manda en cada sincronizacion.
+     --------------------------------------------------------------- */
+  L('--- 2 · el peso de apiEstado_ ---');
+  var t1 = ms(); var eLig = apiEstado_(true);  var msLig = ms() - t1;
+  var chLig = JSON.stringify(eLig).length;
+  var t2 = ms(); var eFull = apiEstado_(false); var msFull = ms() - t2;
+  var chFull = JSON.stringify(eFull).length;
+
+  L('  LIGERO   (el del ciclo de 30 s) : ' + msLig + ' ms · ' + miles(chLig) + ' caracteres');
+  L('  COMPLETO (al abrir y al recargar): ' + msFull + ' ms · ' + miles(chFull) + ' caracteres');
+  L('');
+  L('  reparto del COMPLETO, de mayor a menor:');
+  var partes = [];
+  for(var k in eFull){
+    if(k === 'ahora' || k === 'ligero') continue;
+    partes.push({ clave:k, ch:JSON.stringify(eFull[k]).length,
+                  n:(eFull[k] && eFull[k].length !== undefined) ? eFull[k].length : '' });
+  }
+  partes.sort(function(a,b){ return b.ch - a.ch; });
+  partes.forEach(function(p){
+    var pct = chFull ? Math.round(p.ch * 1000 / chFull) / 10 : 0;
+    L('     ' + (p.clave + '                 ').slice(0, 15) +
+      ('            ' + miles(p.ch)).slice(-13) + ' car · ' +
+      ('    ' + pct).slice(-5) + ' %' + (p.n !== '' ? '  (' + p.n + ' filas)' : ''));
+  });
+  L('');
+
+  /* ---------------------------------------------------------------
+     3 · EL PESO DEL INDEX, QUE SE DESCARGA EN CADA CARGA
+     --------------------------------------------------------------- */
+  L('--- 3 · el Index que baja el navegador ---');
+  try{
+    var html = HtmlService.createHtmlOutputFromFile('Index').getContent();
+    L('  ' + miles(html.length) + ' caracteres');
+    L('  (no esta minificado: los comentarios de bloque y los espacios viajan)');
+  }catch(e){ L('  no se pudo leer: ' + e.message); }
+  L('');
+
+  /* ---------------------------------------------------------------
+     4 · LO QUE CUESTA UNA ACCION TIPICA, SIN CONTAR EL IDA Y VUELTA
+     --------------------------------------------------------------- */
+  L('--- 4 · coste de servidor de las lecturas que repite el sistema ---');
+  var t3 = ms(); var ctx = cohCtx_(); var msCtx = ms() - t3;
+  L('  cohCtx_ (las 4 hojas del expediente, indexadas): ' + msCtx + ' ms');
+  var t4 = ms(); var s = apiSaldos_(); var msSal = ms() - t4;
+  L('  apiSaldos_ (el saldo sumado del kardex)        : ' + msSal + ' ms · ' +
+    Object.keys(s.saldos || {}).length + ' codigo(s)');
+  var t5 = ms(); var cat = apiCatalogos_(); var msCat = ms() - t5;
+  L('  apiCatalogos_                                  : ' + msCat + ' ms · ' +
+    miles(JSON.stringify(cat).length) + ' caracteres');
+  L('');
+
+  /* ---------------------------------------------------------------
+     5 · LECTURA DEL RESULTADO
+     --------------------------------------------------------------- */
+  L('--- 5 · que dicen estos numeros ---');
+  var servidor = msFull;
+  L('  El servidor tarda ' + servidor + ' ms en armar la respuesta completa.');
+  L('  Si una accion se siente en 2.000-5.000 ms y aqui vemos ' + servidor + ' ms,');
+  L('  entonces ' + (servidor < 800 ? 'LA MAYOR PARTE DEL TIEMPO NO ESTA EN LA HOJA:'
+                                    : 'una parte importante SI esta en la hoja:'));
+  if(servidor < 800){
+    L('     esta en el ida y vuelta de Apps Script y en que la pantalla ESPERA');
+    L('     la respuesta antes de pintar. Optimizar consultas servira de poco;');
+    L('     lo que sirve es que la pantalla no espere.');
+  }else{
+    L('     vale la pena mandar menos y leer menos hojas por accion.');
+  }
+  L('');
+  var pesado = partes.length ? partes[0] : null;
+  if(pesado) L('  Lo mas pesado de la respuesta es «' + pesado.clave + '» con ' +
+    miles(pesado.ch) + ' caracteres. Si no cambia en cada sincronizacion, no deberia viajar en cada una.');
+  L('');
+  L('===== FIN · no se escribio nada =====');
+  return { ok:true, ms_ligero:msLig, car_ligero:chLig, ms_completo:msFull, car_completo:chFull,
+           ms_hojas:totalMs, reparto:partes };
+}
