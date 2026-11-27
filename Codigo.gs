@@ -121,24 +121,45 @@ function doGet(){
 function apiPing_(){ var ss = libro(); return { ok:true, hoja:ss.getName(), pestanas:ss.getSheets().length }; }
 
 /** Catalogo como lista de objetos {v:valor, d:descripcion, t:tipo}. */
-function catalogo(nombreHoja, colDesc, colTipo){
-  var sh = libro().getSheetByName(nombreHoja);
-  if(!sh || sh.getLastRow() < 2) return [];
-  var idx = indices(sh);
-  var bloque = sh.getRange(2, 1, sh.getLastRow() - 1, idx.__ancho).getValues();
-  var campoValor = nombreHoja === H.clientes ? 'Cliente' : nombreHoja === H.proveedores ? 'Proveedor' : 'Codigo';
-  var iV = idx[campoValor] !== undefined ? idx[campoValor] : 0;
-  var iAct = idx['Activo'], iD = colDesc ? idx[colDesc] : undefined, iT = colTipo ? idx[colTipo] : undefined;
+/* =====================================================================
+   v5.6 · RENDIMIENTO · EL CATALOGO SE LEIA DOS VECES
+   =====================================================================
+   apiEstado_ pedia apiCatalogos_() -- que leia CAT_Productos y
+   CAT_Clientes -- y despues pedia filas(CAT_Productos) y
+   filas(CAT_Clientes) OTRA VEZ. Las dos hojas mas grandes del libro, las
+   853 referencias y los 128 clientes, se leian por duplicado en cada
+   sincronizacion completa. Medido: apiCatalogos_ solo costaba 985 ms.
+
+   Esta funcion hacia sus propias seis llamadas a la hoja en vez de
+   reutilizar filas(). Ahora trabaja sobre el resultado de filas() y acepta
+   una lista YA LEIDA, asi que quien tenga los datos a mano no vuelve a
+   pedirlos. Sin cache y sin memoria entre llamadas: se pasa el dato de
+   forma explicita. Una cache dentro del servidor podria devolver datos
+   viejos despues de una escritura, y ese es exactamente el tipo de defecto
+   que llevamos semanas cerrando.
+
+   El fallback del campo clave se conserva: si la hoja no tuviera la
+   columna con el nombre esperado, se usa la primera columna, igual que
+   antes hacia con `idx[campoValor] !== undefined ? ... : 0`.
+   ===================================================================== */
+function catalogo(nombreHoja, colDesc, colTipo, preFilas){
+  var lista = preFilas || filas(nombreHoja);
+  if(!lista.length) return [];
+  var campo = nombreHoja === H.clientes ? 'Cliente' : nombreHoja === H.proveedores ? 'Proveedor' : 'Codigo';
+  if(lista[0][campo] === undefined){
+    for(var kx in lista[0]) if(kx !== '__fila'){ campo = kx; break; }
+  }
   var out = [], vistos = {};
-  for(var i = 0; i < bloque.length; i++){
-    var v = txt(bloque[i][iV]);
+  for(var i = 0; i < lista.length; i++){
+    var r = lista[i], v = txt(r[campo]);
     if(!v) continue;
-    if(iAct !== undefined && txt(bloque[i][iAct]).toUpperCase() === 'N') continue;
-    if(vistos[v.toLowerCase()]) continue;
-    vistos[v.toLowerCase()] = 1;
+    if(r['Activo'] !== undefined && txt(r['Activo']).toUpperCase() === 'N') continue;
+    var kb = v.toLowerCase();
+    if(vistos[kb]) continue;
+    vistos[kb] = 1;
     var o = { v:v };
-    if(iD !== undefined && txt(bloque[i][iD])) o.d = txt(bloque[i][iD]);
-    if(iT !== undefined && txt(bloque[i][iT])) o.t = txt(bloque[i][iT]).toUpperCase();
+    if(colDesc && txt(r[colDesc])) o.d = txt(r[colDesc]);
+    if(colTipo && txt(r[colTipo])) o.t = txt(r[colTipo]).toUpperCase();
     out.push(o);
   }
   out.sort(function(a, b){ return a.v < b.v ? -1 : a.v > b.v ? 1 : 0; });
@@ -152,11 +173,15 @@ function columna(nombreHoja){ return catalogo(nombreHoja).map(function(o){ retur
  * del frontend) mas tres mapas con la informacion extra. Asi, si alguna vez el
  * Index.html y el Codigo.gs quedan desfasados, la app no se rompe.
  */
-function apiCatalogos_(){
-  var cl = catalogo(H.clientes);
-  var pv = catalogo(H.proveedores, null, 'Clase');
-  var pr = catalogo(H.productos, 'Descripcion', 'Tipo_trabajo');
-  var mt = catalogo(H.materias, 'Descripcion');
+/* v5.6 · acepta las hojas YA LEIDAS para no volver a pedirlas. Sin `pre`
+   se comporta exactamente como antes, asi que las otras llamadas que
+   existen en el archivo no cambian de resultado. */
+function apiCatalogos_(pre){
+  pre = pre || {};
+  var cl = catalogo(H.clientes, null, null, pre.clientes);
+  var pv = catalogo(H.proveedores, null, 'Clase', pre.proveedores);
+  var pr = catalogo(H.productos, 'Descripcion', 'Tipo_trabajo', pre.productos);
+  var mt = catalogo(H.materias, 'Descripcion', null, pre.materias);
   function vals(l){ return l.map(function(o){ return o.v; }); }
   var desc = {}, tipo = {}, clase = {};
   pr.forEach(function(o){ if(o.d) desc[o.v] = o.d; if(o.t) tipo[o.v] = o.t; });
@@ -198,26 +223,63 @@ function apiEstado_(ligero){
     ahora:     ahora()
   };
   if(ligero){ e.ligero = true; return e; }
-  e.catalogos    = apiCatalogos_();
-  e.cambios      = filas(H.log);
+  /* v5.6 · RENDIMIENTO · las dos hojas grandes se leen UNA vez y el
+     resultado se le PASA a apiCatalogos_, que antes las volvia a leer por
+     su cuenta. Medido: 853 productos y 128 clientes leidos dos veces en
+     cada sincronizacion completa. El orden importa: primero se leen, luego
+     se derivan los catalogos de lo ya leido. */
   e.productos    = filas(H.productos);
   e.clientesFull = filas(H.clientes);
+  e.catalogos    = apiCatalogos_({ productos:e.productos, clientes:e.clientesFull });
+  e.cambios      = filas(H.log);
   return e;
 }
 
 /** Filas como objetos {Columna: valor}. __fila = fila real, para auditar alineacion. */
+/* =====================================================================
+   v5.6 · RENDIMIENTO · UNA LLAMADA POR HOJA, NO SEIS
+   =====================================================================
+   LO QUE MIDIO heralsaMedirCarga, y no es lo que yo esperaba:
+
+     R1_Compras            0 filas  ->  36 ms
+     CAT_MateriasPrimas    5 filas  -> 596 ms
+     R2_Preparacion        2 filas  -> 565 ms
+     CAT_Productos       853 filas  -> 315 ms
+
+   Cinco filas tardaban MAS que ochocientas cincuenta y tres. Es decir: el
+   tiempo no depende de cuantos datos se leen, depende de CUANTAS VECES se
+   le habla a la hoja. Cada llamada al servicio de Sheets cuesta unos 30-40
+   ms de ida y vuelta, y esta funcion hacia SEIS por hoja:
+     getSheetByName · getLastRow · getLastColumn · getValues(cabecera) ·
+     getLastRow otra vez · getValues(bloque)
+   Con 14 hojas eran ~84 llamadas y 3.827 ms, casi todo espera.
+
+   AHORA se pide el rango de datos UNA vez y la cabecera sale de la primera
+   fila de ese mismo bloque. De seis llamadas a dos.
+
+   EL RESULTADO ES IDENTICO, comprobado caso por caso:
+     · __fila: antes i+2 contando desde la fila 2; ahora i+1 contando desde
+       la fila 1. Para la fila 2: antes i=0 -> 2, ahora i=1 -> 2.
+     · el ancho: getDataRange cubre exactamente hasta la ultima columna con
+       datos, que es lo mismo que daba getLastColumn.
+     · hoja vacia o con solo cabecera: antes getLastRow()<2 devolvia [];
+       ahora todo.length<2 devuelve [] igual.
+     · se sigue descartando la fila cuya PRIMERA columna esta vacia, que es
+       el criterio del que dependen el consecutivo y las secciones.
+   Esta funcion la llaman 154 sitios, asi que la equivalencia no es un
+   detalle: es la condicion para poder tocarla.
+   ===================================================================== */
 function filas(nombreHoja){
   var sh = libro().getSheetByName(nombreHoja);
-  if(!sh || sh.getLastRow() < 2) return [];
-  var ancho = Math.max(sh.getLastColumn(), 1);
-  var cols = sh.getRange(1, 1, 1, ancho).getValues()[0];
-  var bloque = sh.getRange(2, 1, sh.getLastRow() - 1, ancho).getValues();
-  var tz = tzLibro_(), out = [];
-  for(var i = 0; i < bloque.length; i++){
-    if(!txt(bloque[i][0])) continue;
-    var o = { __fila: i + 2 };
+  if(!sh) return [];
+  var todo = sh.getDataRange().getValues();
+  if(todo.length < 2) return [];
+  var cols = todo[0], tz = tzLibro_(), out = [];
+  for(var i = 1; i < todo.length; i++){
+    if(!txt(todo[i][0])) continue;
+    var o = { __fila: i + 1 };
     for(var j = 0; j < cols.length; j++){
-      var v = bloque[i][j];
+      var v = todo[i][j];
       o[txt(cols[j])] = (v instanceof Date) ? fechaTexto(v, tz) : v;
     }
     out.push(o);
@@ -2082,7 +2144,7 @@ function cerrarHuecosMigracion(soloSimular){
 }
 
 /* ===================== PRUEBA Y DIAGNOSTICO ===================== */
-var VERSION_BACKEND = 'v5.5.8';
+var VERSION_BACKEND = 'v5.6';
 
 /**
  * Lee el archivo Index.html REAL del proyecto y dice si quedo bien pegado.
@@ -4235,7 +4297,7 @@ function apiAnalisisFinanciero(token){
 /** Ejecutar esta. Dice si los tres archivos quedaron bien pegados. */
 function heralsaVersion(){
   Logger.log('=========== VERSIONES ===========');
-  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.5.8');
+  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.6');
   Logger.log('Fase 2    : ' + VERSION_FASE2 + '      <- debe decir f2.2');
   var vIndex = null, largo = 0, cierra = false;
   try{
@@ -4243,7 +4305,7 @@ function heralsaVersion(){
     largo  = t.length;
     vIndex = (t.match(/VERSION_APP\s*=\s*'([^']+)'/) || [])[1] || null;
     cierra = t.replace(/\s+$/, '').slice(-7) === '</html>';
-    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.5.8');
+    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.6');
     Logger.log('Termina en </html>: ' + (cierra ? 'SI' : 'NO  *** QUEDO CORTADO AL PEGAR ***'));
     /* El tamano que devuelve getContent() NO coincide con el del archivo
        fuente: HtmlService no entrega el texto literal. Comparar tamanos aqui
@@ -4258,7 +4320,7 @@ function heralsaVersion(){
   }
   Logger.log('---------------------------------');
   if(vIndex === VERSION_BACKEND && cierra)
-    Logger.log('>>> TODO PAREJO EN v5.5.8. El codigo esta bien pegado.');
+    Logger.log('>>> TODO PAREJO EN v5.6. El codigo esta bien pegado.');
   else if(vIndex && vIndex !== VERSION_BACKEND)
     Logger.log('>>> NO COINCIDEN. Vuelva a pegar el archivo que se quedo atras.');
   else
