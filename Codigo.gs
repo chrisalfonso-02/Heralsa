@@ -207,7 +207,54 @@ function apiCatalogos_(pre){
    Al entrar, al cambiar de pantalla y al refrescar a mano se sigue
    pidiendo el estado COMPLETO, asi que nadie trabaja con un catalogo viejo.
    ===================================================================== */
-function apiEstado_(ligero){
+/* =====================================================================
+   v5.6.2 · EL CATALOGO DEJA DE VIAJAR SI NO CAMBIO
+   =====================================================================
+   LO QUE MIDIO heralsaMedirCarga sobre la respuesta real:
+
+     productos      483.828 car ·  77,1 %
+     clientesFull    72.800 car ·  11,6 %
+     catalogos       53.682 car ·   8,6 %
+                                  -------
+     catalogo                       97,3 %
+     TODO lo operativo               2,7 %   (17.543 car)
+
+   El 97 % de cada sincronizacion completa son 853 productos y 128 clientes
+   que casi nunca cambian. Esto no es una estimacion ni depende del ruido de
+   la plataforma: es aritmetica sobre lo que de verdad se manda.
+
+   COMO SE EVITA: el navegador guarda una HUELLA del catalogo que tiene y la
+   manda al pedir el estado. El servidor calcula la huella de lo que iba a
+   mandar y, si coinciden, NO manda el catalogo.
+
+   POR QUE SE OMITEN LAS CLAVES EN VEZ DE MANDARLAS VACIAS: porque mandar un
+   catalogo vacio ya causo un defecto una vez, y esta advertido en
+   estadoSeguro_ («crearlos vacios haria que la app fusionara un catalogo
+   vacio y le borrara los productos al vendedor de mostrador»). El modo
+   LIGERO ya omite estas tres claves y ese camino funciona en produccion
+   desde hace versiones. Se reutiliza ese comportamiento conocido en vez de
+   inventar uno nuevo.
+
+   POR QUE LA HUELLA SE CALCULA SOBRE EL DATO SIN FILTRAR: el rol MOSTRADOR
+   recibe el catalogo recortado, asi que su copia no es igual a la del
+   administrador. Pero la huella solo tiene que responder «cambio el
+   origen?». Si el origen no cambio, el recorte tampoco: la respuesta vale
+   para los dos roles.
+
+   LO QUE NO SE AHORRA, Y LO DIGO: la hoja se sigue LEYENDO para poder
+   calcular la huella. Lo que se evita es el viaje al navegador, que es
+   donde estan los 610.310 caracteres. Ahorrar tambien la lectura exigiria
+   un contador de version, y un contador no se enteraria de que alguien
+   edito CAT_Productos a mano en la hoja -- que es justo como trabaja hoy la
+   empresa. Preferible leer y no mandar, que no leer y mentir.
+   ===================================================================== */
+function huellaTexto_(s){
+  var h = 0;
+  for(var i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return String(h) + '.' + s.length;      /* el largo reduce las colisiones */
+}
+
+function apiEstado_(ligero, huellaCat){
   var e = {
     compras:   filas(H.compras),
     detalle:   filas(H.detalle),
@@ -228,10 +275,21 @@ function apiEstado_(ligero){
      su cuenta. Medido: 853 productos y 128 clientes leidos dos veces en
      cada sincronizacion completa. El orden importa: primero se leen, luego
      se derivan los catalogos de lo ya leido. */
-  e.productos    = filas(H.productos);
-  e.clientesFull = filas(H.clientes);
-  e.catalogos    = apiCatalogos_({ productos:e.productos, clientes:e.clientesFull });
-  e.cambios      = filas(H.log);
+  var prod_ = filas(H.productos);
+  var cli_  = filas(H.clientes);
+  var cat_  = apiCatalogos_({ productos:prod_, clientes:cli_ });
+  e.cambios = filas(H.log);
+
+  /* v5.6.2 · si el navegador ya tiene esta misma version del catalogo, las
+     tres claves NO se ponen. Quedan undefined, igual que en modo ligero. */
+  e.huellaCat = huellaTexto_(JSON.stringify([prod_, cli_, cat_]));
+  if(txt(huellaCat) && txt(huellaCat) === e.huellaCat){
+    e.catSinCambios = true;
+    return e;
+  }
+  e.productos    = prod_;
+  e.clientesFull = cli_;
+  e.catalogos    = cat_;
   return e;
 }
 
@@ -2160,7 +2218,7 @@ function cerrarHuecosMigracion(soloSimular){
 }
 
 /* ===================== PRUEBA Y DIAGNOSTICO ===================== */
-var VERSION_BACKEND = 'v5.6.1';
+var VERSION_BACKEND = 'v5.6.2';
 
 /**
  * Lee el archivo Index.html REAL del proyecto y dice si quedo bien pegado.
@@ -4066,8 +4124,8 @@ function apiGuardarUsuario(token,datos){
   validarClaveNativa_(datos.Clave);crearUsuarioNativo_(datos.Usuario,datos.Nombre,datos.Rol,datos.Clave,filas('CAT_Usuarios').length+1);return {ok:true};
 }
 
-function estadoSeguro_(s,ligero){
-  var e=apiEstado_(ligero);e.usuario={Usuario:s.usuario,Nombre:s.nombre,Rol:s.rol,Debe_cambiar_clave:s.debe_cambiar_clave};
+function estadoSeguro_(s,ligero,huellaCat){
+  var e=apiEstado_(ligero,huellaCat);e.usuario={Usuario:s.usuario,Nombre:s.nombre,Rol:s.rol,Debe_cambiar_clave:s.debe_cambiar_clave};
   if(s.rol!==ROL_MOSTRADOR)return e;
   var propios=(e.pedidos||[]).filter(function(p){return txt(p.Tipo_venta)==='MOSTRADOR'&&low(p.Operador)===low(s.nombre);}),ids={};
   propios.forEach(function(p){ids[txt(p.P_num)]=true;});e.pedidos=propios;
@@ -4100,7 +4158,7 @@ function apiUsuarios(token){
   rolNativo_(token,[ROL_ADMIN]);
   return filas('CAT_Usuarios').map(function(u){return {Usuario_id:u.Usuario_id,Nombre:u.Nombre,Usuario:u.Usuario,Rol:u.Rol,Activo:u.Activo,Debe_cambiar_clave:u.Debe_cambiar_clave};});
 }
-function apiEstado(token,ligero){return estadoSeguro_(exigeClaveCambiada_(sesionNativa_(token),'apiEstado'),ligero);}
+function apiEstado(token,ligero,huellaCat){return estadoSeguro_(exigeClaveCambiada_(sesionNativa_(token),'apiEstado'),ligero,huellaCat);}
 function apiNuevoId(token,prefijo){var s=exigeClaveCambiada_(sesionNativa_(token),'apiNuevoId');if(s.rol===ROL_MOSTRADOR&&prefijo!=='P')throw new Error('PERMISO_DENEGADO');return apiNuevoId_(prefijo);}
 function apiCrearPedido(token,fila){
   var s=exigeClaveCambiada_(sesionNativa_(token),'apiCrearPedido');fila=fila||{};fila.Operador=s.nombre;
@@ -4313,7 +4371,7 @@ function apiAnalisisFinanciero(token){
 /** Ejecutar esta. Dice si los tres archivos quedaron bien pegados. */
 function heralsaVersion(){
   Logger.log('=========== VERSIONES ===========');
-  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.6.1');
+  Logger.log('Codigo.gs : ' + VERSION_BACKEND + '      <- debe decir v5.6.2');
   Logger.log('Fase 2    : ' + VERSION_FASE2 + '      <- debe decir f2.2');
   var vIndex = null, largo = 0, cierra = false;
   try{
@@ -4321,7 +4379,7 @@ function heralsaVersion(){
     largo  = t.length;
     vIndex = (t.match(/VERSION_APP\s*=\s*'([^']+)'/) || [])[1] || null;
     cierra = t.replace(/\s+$/, '').slice(-7) === '</html>';
-    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.6.1');
+    Logger.log('Index     : ' + (vIndex || 'NO ENCONTRADA') + '      <- debe decir v5.6.2');
     Logger.log('Termina en </html>: ' + (cierra ? 'SI' : 'NO  *** QUEDO CORTADO AL PEGAR ***'));
     /* El tamano que devuelve getContent() NO coincide con el del archivo
        fuente: HtmlService no entrega el texto literal. Comparar tamanos aqui
@@ -4336,7 +4394,7 @@ function heralsaVersion(){
   }
   Logger.log('---------------------------------');
   if(vIndex === VERSION_BACKEND && cierra)
-    Logger.log('>>> TODO PAREJO EN v5.6.1. El codigo esta bien pegado.');
+    Logger.log('>>> TODO PAREJO EN v5.6.2. El codigo esta bien pegado.');
   else if(vIndex && vIndex !== VERSION_BACKEND)
     Logger.log('>>> NO COINCIDEN. Vuelva a pegar el archivo que se quedo atras.');
   else
