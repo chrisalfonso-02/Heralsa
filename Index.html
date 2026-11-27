@@ -1397,7 +1397,7 @@ button,.modulo,.modulos-apoyo button,.fin-nav button{-webkit-tap-highlight-color
    Prototipo funcional de una sola página. Estado en localStorage.
    Cada objeto mapea 1:1 a una fila de las hojas R1..R4 de Google Sheets.
    ============================================================ */
-var VERSION_APP = 'v5.6.2';   /* <- lo lee verificarIndex() en el servidor. NO borrar esta línea. */
+var VERSION_APP = 'v5.6.3';   /* <- lo lee verificarIndex() en el servidor. NO borrar esta línea. */
 var KEY = 'heralsa.v5';   /* v5: la hoja es la única fuente de verdad. Al subir de versión cada celular bota su copia vieja y vuelve a leer la hoja. */
 var OPS = ['Hernando', 'Deyana'];
 var META = { i1:5, i2:90, i3:2, i7:95, i10:90 };
@@ -3934,10 +3934,23 @@ function sincronizar(silencioso){
      hidratar() ya estaba preparado para esto: cuando una lista llega vacia
      conserva la anterior (el patron cat(lCli, ant.clientes)).
      ===================================================================== */
-  /* v5.6.2 · se manda la huella del catalogo que ya tenemos. Si no cambio,
+  /* =====================================================================
+     v5.6.2 · se manda la huella del catalogo que ya tenemos. Si no cambio,
      el servidor omite las tres claves grandes y el navegador conserva las
-     suyas por el patron cat(nuevo, viejo), que ya existia. */
-  srv('apiEstado', [!!silencioso, (DB && DB.huellaCat) || ''], function(e){
+     suyas por el patron cat(nuevo, viejo), que ya existia.
+
+     v5.6.3 · Y SOLO se manda si de verdad TENEMOS el catalogo.
+     EL RIESGO QUE CIERRA: si por cualquier motivo el navegador conservara
+     la huella pero perdiera la lista de productos -- un guardado local a
+     medias, una limpieza parcial del almacenamiento --, mandaria la huella,
+     el servidor omitiria el catalogo, y el operador se quedaria sin
+     productos sin que nada lo avisara, hasta que el catalogo cambiara en la
+     hoja. Comprobando DB.refs, el peor caso posible es que se pida el
+     catalogo completo, que es exactamente lo que se hacia antes de esta
+     mejora. Una optimizacion tiene que fallar hacia el lado seguro.
+     ===================================================================== */
+  var tengoCat_ = !!(DB && DB.huellaCat && DB.refs && DB.refs.length);
+  srv('apiEstado', [!!silencioso, tengoCat_ ? DB.huellaCat : ''], function(e){
     if(!e){ SYNC.estado = 'pendiente'; render(); return; }
     var av = hidratar(e);
     SYNC.estado = 'listo';
