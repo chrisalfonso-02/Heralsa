@@ -1397,7 +1397,7 @@ button,.modulo,.modulos-apoyo button,.fin-nav button{-webkit-tap-highlight-color
    Prototipo funcional de una sola página. Estado en localStorage.
    Cada objeto mapea 1:1 a una fila de las hojas R1..R4 de Google Sheets.
    ============================================================ */
-var VERSION_APP = 'v5.6.1';   /* <- lo lee verificarIndex() en el servidor. NO borrar esta línea. */
+var VERSION_APP = 'v5.6.2';   /* <- lo lee verificarIndex() en el servidor. NO borrar esta línea. */
 var KEY = 'heralsa.v5';   /* v5: la hoja es la única fuente de verdad. Al subir de versión cada celular bota su copia vieja y vuelve a leer la hoja. */
 var OPS = ['Hernando', 'Deyana'];
 var META = { i1:5, i2:90, i3:2, i7:95, i10:90 };
@@ -2076,6 +2076,10 @@ function hidratar(e){
     colaDoc: ant.colaDoc || [],
     avisos: av,
     /* FASE 2 */
+    /* v5.6.2 · la huella del catalogo que tenemos ahora. En modo ligero y
+       cuando el servidor omite el catalogo, e.huellaCat no viene o viene
+       igual: se conserva la anterior. */
+    huellaCat: e.huellaCat || (ant.huellaCat || ''),
     prodMeta: Object.keys(prodMeta).length ? prodMeta : (ant.prodMeta || {}),
     cliMeta:  Object.keys(cliMeta).length ? cliMeta : (ant.cliMeta || {}),
     cfg:      Object.keys(cfgMap).length ? cfgMap : (ant.cfg || {}),
@@ -3930,7 +3934,10 @@ function sincronizar(silencioso){
      hidratar() ya estaba preparado para esto: cuando una lista llega vacia
      conserva la anterior (el patron cat(lCli, ant.clientes)).
      ===================================================================== */
-  srv('apiEstado', [!!silencioso], function(e){
+  /* v5.6.2 · se manda la huella del catalogo que ya tenemos. Si no cambio,
+     el servidor omite las tres claves grandes y el navegador conserva las
+     suyas por el patron cat(nuevo, viejo), que ya existia. */
+  srv('apiEstado', [!!silencioso, (DB && DB.huellaCat) || ''], function(e){
     if(!e){ SYNC.estado = 'pendiente'; render(); return; }
     var av = hidratar(e);
     SYNC.estado = 'listo';
