@@ -1397,7 +1397,7 @@ button,.modulo,.modulos-apoyo button,.fin-nav button{-webkit-tap-highlight-color
    Prototipo funcional de una sola página. Estado en localStorage.
    Cada objeto mapea 1:1 a una fila de las hojas R1..R4 de Google Sheets.
    ============================================================ */
-var VERSION_APP = 'v5.6.3';   /* <- lo lee verificarIndex() en el servidor. NO borrar esta línea. */
+var VERSION_APP = 'v5.6.4';   /* <- lo lee verificarIndex() en el servidor. NO borrar esta línea. */
 var KEY = 'heralsa.v5';   /* v5: la hoja es la única fuente de verdad. Al subir de versión cada celular bota su copia vieja y vuelve a leer la hoja. */
 var OPS = ['Hernando', 'Deyana'];
 var META = { i1:5, i2:90, i3:2, i7:95, i10:90 };
@@ -2727,6 +2727,36 @@ S.detC = function(c){
 /* ---- detalle de pedido ---- */
 S.detP = function(c){
   var p = DB.pedidos.filter(function(y){ return y.id === c.id; })[0];
+  /* =====================================================================
+     v5.6.4 · BUG_035 · «Cannot read properties of undefined (reading 'estado')»
+     =====================================================================
+     Esta pantalla leia p.estado SIN comprobar que el pedido existiera. Si
+     por cualquier motivo no estaba en la memoria del navegador, la linea
+     siguiente lanzaba exactamente ese mensaje y la pantalla no se dibujaba.
+     Al usuario le aparecio tres veces al pasar de Finalizar a Facturacion.
+
+     NO se perdia ningun dato -- el pedido llegaba bien a Facturacion, y eso
+     lo comprobo el usuario -- pero una pantalla que se cae no se puede
+     dejar: hoy cuesta un susto y manana tapa un defecto de verdad.
+
+     La pantalla ahora explica que pasa, deja actualizar, y de paso DICE el
+     estado de la memoria. Si vuelve a ocurrir, el aviso trae consigo la
+     informacion para saber por que, en vez de obligar a adivinar.
+     ===================================================================== */
+  if(!p){
+    var ids_ = (DB.pedidos || []).map(function(y){ return y.id; });
+    return { title:'Pedido ' + esc(String(c.id || '')), sub:'no esta cargado', back:true,
+      body:'<div class="avisos"><b>Este pedido no esta en la memoria de este dispositivo</b>'
+        + '<ul><li>No se perdio nada: la hoja es la que manda, y alli sigue como estaba.</li>'
+        + '<li>Pasa cuando la pantalla se abre antes de que termine de llegar la lectura de la hoja.</li></ul></div>'
+        + '<div class="card">' + kv('Pedido buscado', esc(String(c.id || '(sin id)')))
+        + kv('Pedidos en memoria', ids_.length)
+        + kv('Cuales', ids_.length ? esc(ids_.slice(0, 12).join(' · ')) : '(ninguno)') + '</div>'
+        + '<div class="note"><svg class="i sm"><use href="#i-alert"/></svg><div>Si esto se repite, '
+        + 'mande esta pantalla: los numeros de arriba dicen exactamente que tenia el navegador.</div></div>',
+      foot:'<div class="row2"><button class="btn pri" onclick="A.refrescar()">Actualizar desde la hoja</button>'
+        + '<button class="btn gho" onclick="tab(\'pedidos\')">Ver los pedidos</button></div>' };
+  }
   var f = faltaDe(p), tl = tlPedido(p);
   var b = '<div class="card">' + kv('Estado', '<span class="pill ' + f.col + '">' + (anulado(p) ? 'ANULADO' : p.estado.replace('_',' ').toLowerCase()) + '</span>')
     + kv('Cliente', esc(p.cliente)) + kv('Canal', p.canal === 'M' ? 'M · Mayorista' : 'R · Minorista')
@@ -15542,7 +15572,34 @@ function preEnviar(accion,extra,destino){
    cambia al preparar un pedido. hidratar() ya fusiona en vez de reemplazar
    cuando la respuesta viene marcada ligero, asi que el catalogo no se
    borra. El completo se sigue pidiendo al entrar y al pulsar Actualizar. */
-function preRecargar(pid,etapa){srv('apiEstado',[true],function(e){hidratar(e);var p=pedido(pid);if(etapa==='LISTO'){go('detP',{id:pid});return;}A.preStart(pid,etapa);},function(e){toast('Se guardó, pero no se pudo releer: '+(e&&e.message?e.message:String(e)));tab('pedidos');});}
+/* =====================================================================
+   v5.6.4 · BUG_035 · AQUI ESTABA LA CAUSA, Y LA DELATABA UNA VARIABLE MUERTA
+   =====================================================================
+   Esta funcion hacia `var p = pedido(pid);` y NUNCA USABA p. Esa variable
+   sin usar era la huella de la comprobacion que falta: alguien -- yo --
+   penso en verificar que el pedido hubiera llegado y no lo escribio.
+   Despues navegaba a detP de todas formas, y detP leia p.estado sobre un
+   pedido que podia no estar.
+   Lee en modo LIGERO, que es lo correcto para ir rapido. Pero si la lectura
+   ligera no trajo el pedido, ahora pide la COMPLETA antes de navegar en vez
+   de abrir una pantalla que se va a caer. Cuesta una lectura mas solo en el
+   caso raro; en el normal no cuesta nada.
+   ===================================================================== */
+function preRecargar(pid,etapa){
+  function ir_(){ if(etapa==='LISTO'){go('detP',{id:pid});return;} A.preStart(pid,etapa); }
+  srv('apiEstado',[true],function(e){
+    hidratar(e);
+    if(pedido(pid)){ ir_(); return; }
+    /* la lectura ligera no lo trajo: se pide completa antes de navegar */
+    srv('apiEstado',[false,''],function(e2){
+      hidratar(e2);
+      if(pedido(pid)){ ir_(); return; }
+      toast('Se guardó en la hoja, pero este dispositivo todavía no ve el pedido. '
+            + 'Toca «Actualizar» en Inicio.', true);
+      tab('pedidos');
+    },function(){ toast('Se guardó en la hoja. No se pudo releer el pedido: toca «Actualizar» en Inicio.', true); tab('pedidos'); });
+  },function(e){toast('Se guardó, pero no se pudo releer: '+(e&&e.message?e.message:String(e)),true);tab('pedidos');});
+}
 /* El escáner ya existente entra al mismo formulario de Organizar. */
 var scanUsarNativo_=A.f2scanUsar;
 A.f2scanUsar=function(){if(W.pre&&W.scanPend){var cod=W.scanPend.cod;W.scanPend=null;A.preTomar(cod);return;}return scanUsarNativo_();};
