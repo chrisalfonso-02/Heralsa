@@ -666,3 +666,101 @@ function heralsaMedirCarga(){
   return { ok:true, ms_ligero:msLig, car_ligero:chLig, ms_completo:msFull, car_completo:chFull,
            ms_hojas:totalMs, reparto:partes };
 }
+
+
+/* =====================================================================
+   HERALSA · EQUIVALENCIA DE filas() DESPUES DE OPTIMIZARLA
+   =====================================================================
+   SOLO LEE.
+
+   POR QUE EXISTE: en v5.6 cambie filas(), que la llaman 154 sitios del
+   servidor. Si el resultado cambiara en el mas minimo detalle -- una fila
+   de mas, una clave distinta, un __fila corrido en uno -- se romperian los
+   consecutivos, las secciones, los indicadores y las llaves foraneas a la
+   vez. Decir «es equivalente» no vale: hay que demostrarlo.
+
+   Esta funcion reimplementa el algoritmo VIEJO tal como estaba y lo compara
+   con el nuevo, hoja por hoja, fila por fila y clave por clave. Si hay una
+   sola diferencia, la nombra con la hoja, la fila y la columna.
+   ===================================================================== */
+
+function heralsaVerificarFilas(){
+  function L(s){ Logger.log(s === undefined ? '' : s); }
+
+  /* El algoritmo ANTERIOR, copiado tal cual era antes de v5.6 */
+  function filasViejo_(nombreHoja){
+    var sh = libro().getSheetByName(nombreHoja);
+    if(!sh || sh.getLastRow() < 2) return [];
+    var ancho = Math.max(sh.getLastColumn(), 1);
+    var cols = sh.getRange(1, 1, 1, ancho).getValues()[0];
+    var bloque = sh.getRange(2, 1, sh.getLastRow() - 1, ancho).getValues();
+    var tz = tzLibro_(), out = [];
+    for(var i = 0; i < bloque.length; i++){
+      if(!txt(bloque[i][0])) continue;
+      var o = { __fila: i + 2 };
+      for(var j = 0; j < cols.length; j++){
+        var v = bloque[i][j];
+        o[txt(cols[j])] = (v instanceof Date) ? fechaTexto(v, tz) : v;
+      }
+      out.push(o);
+    }
+    return out;
+  }
+
+  L('===== EQUIVALENCIA DE filas() · viejo contra nuevo =====');
+  L('Libro: ' + libro().getName() + ' · ' + ahora());
+  L('');
+
+  var hojas = [];
+  libro().getSheets().forEach(function(sh){ hojas.push(sh.getName()); });
+
+  var difs = 0, comparadas = 0, filasTot = 0;
+  L('hoja                      filas  resultado');
+  hojas.forEach(function(n){
+    var a, b;
+    try{ a = filasViejo_(n); b = filas(n); }
+    catch(e){ difs++; L('  ' + n + '  >>> ERROR al leer: ' + e.message); return; }
+    comparadas++;
+    var problema = '';
+
+    if(a.length !== b.length)
+      problema = 'cuenta distinta: viejo ' + a.length + ', nuevo ' + b.length;
+
+    for(var i = 0; !problema && i < a.length; i++){
+      if(a[i].__fila !== b[i].__fila){
+        problema = 'fila fisica distinta en la posicion ' + i +
+                   ': viejo ' + a[i].__fila + ', nuevo ' + b[i].__fila;
+        break;
+      }
+      var ka = Object.keys(a[i]).sort(), kb = Object.keys(b[i]).sort();
+      if(ka.join('|') !== kb.join('|')){
+        problema = 'columnas distintas en la fila ' + a[i].__fila;
+        break;
+      }
+      for(var j = 0; j < ka.length; j++){
+        var va = a[i][ka[j]], vb = b[i][ka[j]];
+        if(String(va) !== String(vb)){
+          problema = 'valor distinto en la fila ' + a[i].__fila + ', columna «' + ka[j] +
+                     '»: viejo "' + String(va) + '", nuevo "' + String(vb) + '"';
+          break;
+        }
+      }
+    }
+
+    filasTot += b.length;
+    L('  ' + (n + '                        ').slice(0, 24) +
+      ('     ' + b.length).slice(-6) + '  ' + (problema ? '>>> ' + problema : 'identico'));
+    if(problema) difs++;
+  });
+
+  L('');
+  L('===== RESUMEN =====');
+  L('Hojas comparadas : ' + comparadas);
+  L('Filas verificadas: ' + filasTot + ' (cada una, clave por clave)');
+  L('Diferencias      : ' + difs);
+  L(difs === 0
+    ? '>>> EQUIVALENTE. El cambio de filas() no altera ni un dato, y la lectura\n>>> pasa de seis llamadas por hoja a dos.'
+    : '>>> HAY DIFERENCIAS. NO publique: revierta filas() y mandeme este registro.');
+  L('No se escribio nada.');
+  return { ok:difs === 0, hojas:comparadas, filas:filasTot, diferencias:difs };
+}
