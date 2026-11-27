@@ -1397,7 +1397,7 @@ button,.modulo,.modulos-apoyo button,.fin-nav button{-webkit-tap-highlight-color
    Prototipo funcional de una sola página. Estado en localStorage.
    Cada objeto mapea 1:1 a una fila de las hojas R1..R4 de Google Sheets.
    ============================================================ */
-var VERSION_APP = 'v5.6.4';   /* <- lo lee verificarIndex() en el servidor. NO borrar esta línea. */
+var VERSION_APP = 'v5.6.5';   /* <- lo lee verificarIndex() en el servidor. NO borrar esta línea. */
 var KEY = 'heralsa.v5';   /* v5: la hoja es la única fuente de verdad. Al subir de versión cada celular bota su copia vieja y vuelve a leer la hoja. */
 var OPS = ['Hernando', 'Deyana'];
 var META = { i1:5, i2:90, i3:2, i7:95, i10:90 };
@@ -2743,6 +2743,31 @@ S.detP = function(c){
      estado de la memoria. Si vuelve a ocurrir, el aviso trae consigo la
      informacion para saber por que, en vez de obligar a adivinar.
      ===================================================================== */
+  /* =====================================================================
+     v5.6.5 · BUG_035 · LO QUE LLEGABA VACIO ERA EL NUMERO, NO LOS DATOS
+     =====================================================================
+     La pantalla de diagnostico de v5.6.4 lo resolvio con sus propios datos:
+
+        Pedido buscado      (sin id)
+        Pedidos en memoria  3
+        Cuales              P-001 · P-002 · P-003
+
+     Los tres pedidos SI estaban cargados. Lo que llegaba vacio era el id.
+     Asi que no era lentitud de la hoja -- ni mi primera hipotesis ni la del
+     usuario eran correctas --: era una navegacion que llegaba aqui sin
+     decir de que pedido hablaba.
+
+     QUE SE HACE AHORA: si no viene el id, se usa el pedido en el que el
+     operador esta trabajando (W.pid). En este flujo -- acaba de finalizar
+     un pedido y pulsa el paso siguiente -- ese es siempre el pedido
+     correcto, asi que la pantalla se abre bien en vez de dar un error por
+     un dato que el sistema ya tiene a mano.
+
+     Y SI AUN ASI NO SE PUEDE RESOLVER, el aviso dice la ruta: el id que
+     llego, el pedido en que se estaba trabajando y de que pantalla se
+     venia. Con eso, la proxima vez no hay que adivinar la ruta: la trae.
+     ===================================================================== */
+  if(!p && W && W.pid) p = DB.pedidos.filter(function(y){ return y.id === W.pid; })[0];
   if(!p){
     var ids_ = (DB.pedidos || []).map(function(y){ return y.id; });
     return { title:'Pedido ' + esc(String(c.id || '')), sub:'no esta cargado', back:true,
@@ -2750,6 +2775,8 @@ S.detP = function(c){
         + '<ul><li>No se perdio nada: la hoja es la que manda, y alli sigue como estaba.</li>'
         + '<li>Pasa cuando la pantalla se abre antes de que termine de llegar la lectura de la hoja.</li></ul></div>'
         + '<div class="card">' + kv('Pedido buscado', esc(String(c.id || '(sin id)')))
+        + kv('En el que se trabajaba', esc(String((W && W.pid) || '(ninguno)')))
+        + kv('Pantalla actual', esc(String((typeof cur !== 'undefined' && cur.n) || '?')))
         + kv('Pedidos en memoria', ids_.length)
         + kv('Cuales', ids_.length ? esc(ids_.slice(0, 12).join(' · ')) : '(ninguno)') + '</div>'
         + '<div class="note"><svg class="i sm"><use href="#i-alert"/></svg><div>Si esto se repite, '
