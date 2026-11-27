@@ -764,3 +764,111 @@ function heralsaVerificarFilas(){
   L('No se escribio nada.');
   return { ok:difs === 0, hojas:comparadas, filas:filasTot, diferencias:difs };
 }
+
+
+/* =====================================================================
+   HERALSA · ¿LA LECTURA NUEVA ES MAS RAPIDA? · A/B HONESTO
+   =====================================================================
+   SOLO LEE.
+
+   POR QUE HACE FALTA ESTO: heralsaMedirCarga mide UNA vez cada hoja, y en
+   Apps Script una sola medicion no vale. Comprobado con datos reales: la
+   misma hoja, con el mismo codigo y los mismos datos, dio 160 ms en una
+   corrida y 743 ms en la siguiente. Con esa varianza, comparar dos totales
+   de dos corridas distintas no demuestra nada, y yo estuve a punto de
+   cantar una mejora que no podia probar.
+
+   COMO SE MIDE BIEN una latencia con ruido:
+
+     1. ALTERNAR · viejo, nuevo, viejo, nuevo... en la MISMA ejecucion. Si
+        se midiera todo lo viejo primero y luego todo lo nuevo, cualquier
+        calentamiento o estrangulamiento de cuota se le cargaria entero al
+        segundo.
+     2. REPETIR · varias vueltas por hoja.
+     3. MIRAR EL MINIMO, no el promedio. El ruido solo puede AÑADIR tiempo,
+        nunca quitarlo: el minimo observado es lo mas cerca que estamos del
+        coste real. Un promedio mezcla el coste con los picos de la
+        infraestructura compartida de Google.
+
+   El veredicto exige una diferencia de al menos el 15 % para llamarla
+   mejora. Por debajo de eso, con esta plataforma, no se puede distinguir
+   de ruido y hay que decir que no se sabe.
+   ===================================================================== */
+
+function heralsaCompararLectura(){
+  function L(s){ Logger.log(s === undefined ? '' : s); }
+  function ms(){ return new Date().getTime(); }
+  var VUELTAS = 5;
+
+  /* el algoritmo ANTERIOR a v5.6, tal como estaba */
+  function viejo_(n){
+    var sh = libro().getSheetByName(n);
+    if(!sh || sh.getLastRow() < 2) return [];
+    var ancho = Math.max(sh.getLastColumn(), 1);
+    var cols = sh.getRange(1, 1, 1, ancho).getValues()[0];
+    var bloque = sh.getRange(2, 1, sh.getLastRow() - 1, ancho).getValues();
+    var tz = tzLibro_(), out = [];
+    for(var i = 0; i < bloque.length; i++){
+      if(!txt(bloque[i][0])) continue;
+      var o = { __fila: i + 2 };
+      for(var j = 0; j < cols.length; j++){
+        var v = bloque[i][j];
+        o[txt(cols[j])] = (v instanceof Date) ? fechaTexto(v, tz) : v;
+      }
+      out.push(o);
+    }
+    return out;
+  }
+
+  L('===== ¿ES MAS RAPIDA LA LECTURA NUEVA? · A/B · solo lectura =====');
+  L('Libro: ' + libro().getName() + ' · ' + ahora());
+  L(VUELTAS + ' vueltas por hoja, alternando viejo y nuevo. Se reporta el MINIMO,');
+  L('que es lo mas cerca del coste real: el ruido solo puede sumar tiempo.');
+  L('');
+
+  var hojas = [H.productos, H.clientes, H.prepDet, H.pedidos, H.cfg, H.compras];
+  L('hoja                     filas   viejo min   nuevo min   diferencia');
+
+  var sumV = 0, sumN = 0;
+  hojas.forEach(function(n){
+    var minV = null, minN = null, cuantas = 0, v;
+    for(var k = 0; k < VUELTAS; k++){
+      var t1 = ms(); v = viejo_(n);  var dv = ms() - t1;
+      var t2 = ms(); var b = filas(n); var dn = ms() - t2;
+      cuantas = b.length;
+      if(minV === null || dv < minV) minV = dv;
+      if(minN === null || dn < minN) minN = dn;
+    }
+    sumV += minV; sumN += minN;
+    var dif = minV ? Math.round((minV - minN) * 1000 / minV) / 10 : 0;
+    L('  ' + (n + '                        ').slice(0, 24) +
+      ('     ' + cuantas).slice(-6) + '  ' +
+      ('        ' + minV + ' ms').slice(-10) + '  ' +
+      ('        ' + minN + ' ms').slice(-10) + '  ' +
+      ('       ' + (dif > 0 ? '-' + dif : '+' + (-dif)) + ' %').slice(-10));
+  });
+
+  L('  ' + '--------------------------------------------------------------');
+  var difTot = sumV ? Math.round((sumV - sumN) * 1000 / sumV) / 10 : 0;
+  L('  SUMA DE MINIMOS                ' + ('        ' + sumV + ' ms').slice(-10) +
+    '  ' + ('        ' + sumN + ' ms').slice(-10) +
+    '  ' + ('       ' + (difTot > 0 ? '-' + difTot : '+' + (-difTot)) + ' %').slice(-10));
+  L('');
+
+  L('--- veredicto ---');
+  if(difTot >= 15)
+    L('  MEJORA REAL de ' + difTot + ' %. Por encima del 15 %, se distingue del ruido.');
+  else if(difTot <= -15)
+    L('  EMPEORO ' + (-difTot) + ' %. Hay que revertir el cambio de filas().');
+  else
+    L('  NO SE PUEDE DISTINGUIR DEL RUIDO (' + difTot + ' %). El cambio es seguro -- se\n' +
+      '  demostro que da el mismo dato -- pero NO se puede afirmar que sea mas\n' +
+      '  rapido. El tiempo esta en otra parte, no en como se lee cada hoja.');
+  L('');
+  L('  Pase lo que pase aqui, lo que SI es seguro y grande esta medido aparte:');
+  L('  el 97 % de lo que viaja al navegador es catalogo que casi no cambia.');
+  L('  Dejar de mandarlo no depende de esta comparacion.');
+  L('');
+  L('===== FIN · no se escribio nada =====');
+  return { ok:true, viejo_ms:sumV, nuevo_ms:sumN, diferencia_pct:difTot };
+}
