@@ -872,3 +872,56 @@ function heralsaCompararLectura(){
   L('===== FIN · no se escribio nada =====');
   return { ok:true, viejo_ms:sumV, nuevo_ms:sumN, diferencia_pct:difTot };
 }
+
+
+/* =====================================================================
+   HERALSA · ¿CUANTO SE AHORRA AL NO REENVIAR EL CATALOGO?
+   =====================================================================
+   SOLO LEE. Esto no depende del ruido de la plataforma: mide CARACTERES,
+   no milisegundos. El peso de una respuesta es el mismo siempre.
+   ===================================================================== */
+function heralsaMedirCatalogo(){
+  function L(s){ Logger.log(s === undefined ? '' : s); }
+  function miles(n){ return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, '.'); }
+
+  L('===== AHORRO AL NO REENVIAR EL CATALOGO · solo lectura =====');
+  L('');
+
+  var e1 = apiEstado_(false);                  /* como si el navegador no tuviera nada */
+  var c1 = JSON.stringify(e1).length;
+  var h  = e1.huellaCat;
+
+  var e2 = apiEstado_(false, h);               /* como si ya tuviera este catalogo */
+  var c2 = JSON.stringify(e2).length;
+
+  var e3 = apiEstado_(false, 'huella-que-no-existe');   /* catalogo cambiado */
+  var c3 = JSON.stringify(e3).length;
+
+  L('  1 · primera carga, sin huella        : ' + miles(c1) + ' caracteres');
+  L('  2 · con la huella al dia             : ' + miles(c2) + ' caracteres' +
+    (e2.catSinCambios ? '   <- el catalogo NO viajo' : '   <<< VIAJO: algo esta mal'));
+  L('  3 · con huella vieja (catalogo nuevo): ' + miles(c3) + ' caracteres' +
+    (e3.catSinCambios ? '   <<< NO viajo y debia viajar' : '   <- viajo, como debe'));
+  L('');
+  var ahorro = c1 ? Math.round((c1 - c2) * 1000 / c1) / 10 : 0;
+  L('  AHORRO en cada sincronizacion completa con el catalogo al dia:');
+  L('     ' + miles(c1 - c2) + ' caracteres menos · ' + ahorro + ' %');
+  L('');
+
+  L('--- comprobaciones de que no se rompio nada ---');
+  var ok = true;
+  function chk(cond, t){ L('   ' + (cond ? 'OK   ' : 'FALLA') + ' · ' + t); if(!cond) ok = false; }
+  chk(!!h, 'el servidor devuelve una huella del catalogo');
+  chk(e2.catSinCambios === true, 'con la huella al dia, el catalogo se omite');
+  chk(e2.productos === undefined && e2.clientesFull === undefined && e2.catalogos === undefined,
+      'las tres claves quedan SIN PONER (igual que en modo ligero), no vacias');
+  chk(!e3.catSinCambios && !!e3.productos, 'con huella distinta, el catalogo SI se manda');
+  chk(JSON.stringify(e1.pedidos) === JSON.stringify(e2.pedidos),
+      'lo operativo (pedidos) viaja igual en los dos casos');
+  chk(e2.huellaCat === h, 'la huella devuelta es estable entre llamadas');
+  chk(huellaTexto_('abc') !== huellaTexto_('abd'), 'la huella distingue contenidos distintos');
+  L('');
+  L(ok ? '>>> TODO CORRECTO.' : '>>> HAY FALLOS: no implemente y mandeme este registro.');
+  L('No se escribio nada.');
+  return { ok:ok, sin_huella:c1, con_huella:c2, ahorro_pct:ahorro };
+}
